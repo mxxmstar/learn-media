@@ -1,0 +1,33 @@
+{
+  "name": "my-cross-platform-app",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "spdlog",
+    "fmt",
+    "boost-asio",
+    "boost-beast",
+    "boost-system",
+    "boost-uuid",
+    "boost-json",
+    "boost-process",
+    "boost-mysql",
+    "boost-redis",
+    "boost-pool",
+    "boost-lockfree",
+    "boost-filesystem",
+    "zlmediakit",
+    "ffmpeg",
+    "opencv",
+    "openvino",
+    "libyuv",
+    "openssl",
+    "grpc",
+    "protobuf",
+    "zeromq",
+    "nlohmann-json",
+    "yaml-cpp",
+    "libdatachannel",
+    "sqlite3",
+    "async-simple"
+  ]
+}
