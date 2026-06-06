@@ -35,4 +35,9 @@ src-cpp/modules/*/test/*.bak
 vcpkg/
 vcpkg_installed/
 build/
+bin/
+lib/
+CMakeFiles/
 .vs/
+*.bak
+CMakeCache.txt

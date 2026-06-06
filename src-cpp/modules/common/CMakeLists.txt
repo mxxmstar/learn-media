@@ -14,56 +14,28 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     find_package(spdlog CONFIG REQUIRED)
     find_package(fmt CONFIG REQUIRED)
     find_package(yaml-cpp CONFIG REQUIRED)
-    find_package(Boost REQUIRED COMPONENTS json system filesystem process lockfree)
+    find_package(Boost REQUIRED COMPONENTS json system filesystem process lockfree pool)
     if(WIN32)
         add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
     endif()
 endif()
 
-# ── Library target ──
-if(NOT DEFINED BUILD_COMMON_TESTS)
-    set(BUILD_COMMON_TESTS ${BUILD_TESTS})
+# ── Test gate (media sets BUILD_COMMON_TESTS=OFF) ──
+if(DEFINED BUILD_COMMON_TESTS AND NOT BUILD_COMMON_TESTS)
+    set(BUILD_TESTS OFF)
 endif()
 
-file(GLOB_RECURSE COMMON_SOURCES
-    "src/*.cpp"
-    "include/common/log/*.h"
-    "include/common/config/*.h"
-    "include/common/pool/*.hpp"
+# ── Submodules ──
+add_subdirectory(config)
+add_subdirectory(log)
+add_subdirectory(pool)
+add_subdirectory(queue)
+
+# ── Meta-target for backward compatibility ──
+add_library(common_lib INTERFACE)
+target_link_libraries(common_lib INTERFACE
+    common_config
+    common_log
+    common_pool
+    common_queue
 )
-
-add_library(common_lib ${COMMON_SOURCES})
-
-target_include_directories(common_lib
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(common_lib
-    PUBLIC
-        spdlog::spdlog
-        fmt::fmt
-        yaml-cpp::yaml-cpp
-        Boost::json
-        Boost::system
-        Boost::filesystem
-        Boost::process
-        Boost::lockfree
-)
-
-if(WIN32)
-    target_compile_definitions(common_lib PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
-
-# ── Tests ──
-if(BUILD_TESTS AND BUILD_COMMON_TESTS)
-    file(GLOB TEST_SOURCES "test/*.cpp")
-    if(TEST_SOURCES)
-        foreach(TEST_FILE ${TEST_SOURCES})
-            get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
-            add_executable(test_${TEST_NAME} ${TEST_FILE})
-            target_link_libraries(test_${TEST_NAME} PRIVATE common_lib)
-            add_test(NAME test_${TEST_NAME} COMMAND test_${TEST_NAME})
-        endforeach()
-    endif()
-endif()

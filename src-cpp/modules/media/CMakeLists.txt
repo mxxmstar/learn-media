@@ -1,5 +1,4 @@
-﻿# ── Standalone build ──
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+﻿if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.18)
     if(POLICY CMP0167)
         cmake_policy(SET CMP0167 NEW)
@@ -29,6 +28,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(../common common_build)
 endif()
 
-add_subdirectory(defines)
-add_subdirectory(puller)
-add_subdirectory(decoder)
+set(MEDIA_SUBMODULES
+    runtime
+    defines
+    puller
+    decoder
+)
+
+foreach(submodule ${MEDIA_SUBMODULES})
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/CMakeLists.txt")
+        add_subdirectory(${submodule})
+    endif()
+endforeach()

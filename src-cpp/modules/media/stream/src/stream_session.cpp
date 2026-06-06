@@ -1,7 +1,7 @@
 #include "stream/session/stream_session.h"
 
 #include <boost/asio/post.hpp>
-#include "common/log/logmanager.h"
+#include "log/logmanager.h"
 
 // ── 辅助 ───────────────────────────────────────────────────────────
 

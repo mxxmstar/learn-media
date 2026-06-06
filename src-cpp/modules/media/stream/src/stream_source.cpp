@@ -1,6 +1,6 @@
 #include "stream/stream_source.h"
 
-#include "common/log/logmanager.h"
+#include "log/logmanager.h"
 
 // ── ctor / dtor ────────────────────────────────────────────────────
 
