@@ -6,15 +6,19 @@
 #include <string>
 #include <type_traits>
 #include <typeindex>
+#include <unordered_set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "graph/edge_context.h"
 #include "graph/node_context.h"
+#include "executor/i_executor.h"
 #include "node/i_node.h"
 #include "port/input_port.h"
 #include "port/output_port.h"
 #include "scheduler/i_scheduler.h"
+#include "transport/direct_transport.h"
 #include "transport/i_mailbox.h"
 #include "transport/queue_transport.h"
 
@@ -45,80 +49,139 @@ class Graph {
 public:
     template<typename T, typename... Args>
     std::string AddNode(std::string id, std::shared_ptr<IExecutor> executor, Args&&... args) {
-        auto node = std::make_shared<T>(std::forward<Args>(args)...);
+        return AddNodeWithOptions<T>(
+            std::move(id), std::move(executor), NodeOptions{}, std::forward<Args>(args)...);
+    }
 
-        NodeContext ctx;
-        ctx.id = id;
-        ctx.node = std::static_pointer_cast<INode>(node);
-        ctx.executor = std::move(executor);
-        ctx.metrics = std::make_shared<NodeMetrics>();
+    template<typename T, typename... Args>
+    std::string AddNodeWithOptions(std::string id,
+                                   std::shared_ptr<IExecutor> executor,
+                                   NodeOptions options,
+                                   Args&&... args) {
+        if (id.empty() || !executor || nodes_.find(id) != nodes_.end()) {
+            return {};
+        }
+
+        auto node = std::make_shared<T>(std::forward<Args>(args)...);
+        auto ctx = std::make_unique<NodeContext>();
+        ctx->id = id;
+        ctx->node = std::static_pointer_cast<INode>(node);
+        ctx->executor = std::move(executor);
+        ctx->metrics = std::make_shared<NodeMetrics>();
+        ctx->execution_mode = options.execution_mode;
 
         if constexpr (detail::HasInputMethod<T>::value) {
             auto& input = node->Input();
             using InType = typename std::decay_t<decltype(input)>::Type;
-            ctx.input_ports[std::type_index(typeid(InType))] = &input;
+            ctx->input_ports[std::type_index(typeid(InType))] = &input;
         }
 
         if constexpr (detail::HasOutputMethod<T>::value) {
             auto& output = node->Output();
             using OutType = typename std::decay_t<decltype(output)>::Type;
-            ctx.output_ports[std::type_index(typeid(OutType))] = &output;
+            ctx->output_ports[std::type_index(typeid(OutType))] = &output;
         }
 
-        nodes_[id] = std::move(ctx);
-        return id;
+        auto [_, inserted] = nodes_.emplace(id, std::move(ctx));
+        return inserted ? id : std::string{};
     }
 
     template<typename T>
-    void Connect(const std::string& src, const std::string& dst,
+    bool Connect(const std::string& src, const std::string& dst,
                  TransportType type = TransportType::Queue,
                  std::size_t capacity = 64,
                  BackpressurePolicy policy = BackpressurePolicy::DropOldest) {
         auto src_it = nodes_.find(src);
         auto dst_it = nodes_.find(dst);
-        if (src_it == nodes_.end() || dst_it == nodes_.end()) {
-            return;
+        if (src_it == nodes_.end() || dst_it == nodes_.end() || !scheduler_) {
+            return false;
         }
 
-        auto& src_ctx = src_it->second;
-        auto& dst_ctx = dst_it->second;
+        auto& src_ctx = *src_it->second;
+        auto& dst_ctx = *dst_it->second;
 
         auto out_it = src_ctx.output_ports.find(std::type_index(typeid(T)));
         auto in_it = dst_ctx.input_ports.find(std::type_index(typeid(T)));
         if (out_it == src_ctx.output_ports.end() || in_it == dst_ctx.input_ports.end()) {
-            return;
+            return false;
         }
 
         auto* output = std::any_cast<OutputPort<T>*>(out_it->second);
         auto* input = std::any_cast<InputPort<T>*>(in_it->second);
+        if (!output || !input) {
+            return false;
+        }
 
         auto edge = std::make_shared<EdgeContext<T>>();
         edge->edge_id = src + "->" + dst;
         edge->src_id = src;
         edge->dst_ = &dst_ctx;
-        edge->scheduler_ = scheduler_.get();
+        edge->dst_metrics_ = dst_ctx.metrics;
+        edge->scheduler_ = scheduler_;
 
-        edge->transport = std::make_shared<QueueTransport<T>>(capacity, policy);
+        if (type == TransportType::Direct) {
+            edge->transport = std::make_shared<DirectTransport<T>>();
+        } else {
+            edge->transport = std::make_shared<QueueTransport<T>>(capacity, policy);
+        }
 
-        edge->consumer_ = [input](T msg) {
-            if (input) {
-                input->Receive(std::move(msg));
+        auto count_send_result = [metrics = dst_ctx.metrics](MailboxPushResult result) {
+            if (!metrics) {
+                return;
+            }
+
+            switch (result) {
+            case MailboxPushResult::Accepted:
+                metrics->enqueued.fetch_add(1);
+                break;
+            case MailboxPushResult::DroppedOldest:
+                metrics->enqueued.fetch_add(1);
+                metrics->dropped.fetch_add(1);
+                break;
+            case MailboxPushResult::DroppedNewest:
+                metrics->dropped.fetch_add(1);
+                break;
+            case MailboxPushResult::Closed:
+                metrics->rejected.fetch_add(1);
+                break;
             }
         };
 
-        auto edge_raw = edge.get();
-        edge->transport->SetNotifyCallback([edge_raw]() {
-            bool expected = false;
-            if (edge_raw->scheduled.compare_exchange_strong(expected, true)) {
-                if (edge_raw->scheduler_) {
-                    edge_raw->scheduler_->Notify(edge_raw);
+        if (auto queue_transport = std::dynamic_pointer_cast<QueueTransport<T>>(edge->transport)) {
+            queue_transport->SetSendResultCallback(count_send_result);
+            std::weak_ptr<IEdgeContext> weak_edge = edge;
+            queue_transport->SetNotifyCallback([weak_edge]() {
+                if (auto edge = weak_edge.lock()) {
+                    edge->TrySchedule();
                 }
-            }
-        });
+            });
+        }
+
+        if (auto direct_transport = std::dynamic_pointer_cast<DirectTransport<T>>(edge->transport)) {
+            direct_transport->SetSendResultCallback(count_send_result);
+            direct_transport->SetConsumer([input, dst = &dst_ctx, metrics = dst_ctx.metrics](T msg) mutable {
+                dst->Dispatch([input, metrics, msg = std::move(msg)]() mutable {
+                        try {
+                            input->Receive(std::move(msg));
+                            if (metrics) {
+                                metrics->processed.fetch_add(1);
+                            }
+                        } catch (...) {
+                            if (metrics) {
+                                metrics->errors.fetch_add(1);
+                            }
+                        }
+                    });
+            });
+        }
+
+        edge->consumer_ = [input](T msg) {
+            input->Receive(std::move(msg));
+        };
 
         output->AddTransport(edge->transport);
-
         edges_.push_back(std::move(edge));
+        return true;
     }
 
     void SetScheduler(std::shared_ptr<IScheduler> scheduler) {
@@ -127,57 +190,93 @@ public:
 
     NodeContext* GetNode(const std::string& id) {
         auto it = nodes_.find(id);
-        return it != nodes_.end() ? &it->second : nullptr;
+        return it != nodes_.end() ? it->second.get() : nullptr;
     }
 
     bool Start() {
+        if (running_) {
+            return false;
+        }
+
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.node) {
-                ctx.node->Init();
+            ctx->OpenDispatch();
+            if (ctx->node && !ctx->node->Init()) {
+                return false;
             }
         }
+
+        std::unordered_set<IExecutor*> started;
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.executor) {
-                ctx.executor->Start();
+            if (ctx->executor && started.insert(ctx->executor.get()).second) {
+                if (!ctx->executor->Start()) {
+                    StopStartedExecutors(started);
+                    return false;
+                }
             }
         }
+
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.node) {
-                ctx.node->Start();
+            if (ctx->node && !ctx->node->Start()) {
+                Stop();
+                return false;
             }
         }
+
+        running_ = true;
         return true;
     }
 
     void Stop() {
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.node) {
-                ctx.node->Stop();
+            if (ctx->node) {
+                ctx->node->Stop();
             }
         }
+
+        for (auto& edge : edges_) {
+            edge->Close();
+        }
+
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.executor) {
-                ctx.executor->Stop();
-            }
+            ctx->CloseDispatch();
         }
+
+        std::unordered_set<IExecutor*> stopped;
         for (auto& [_, ctx] : nodes_) {
-            if (ctx.node) {
-                ctx.node->Deinit();
+            if (ctx->executor && stopped.insert(ctx->executor.get()).second) {
+                ctx->executor->Stop();
             }
         }
+
+        for (auto& [_, ctx] : nodes_) {
+            if (ctx->node) {
+                ctx->node->Deinit();
+            }
+        }
+
+        running_ = false;
     }
 
     bool GetMetrics(const std::string& id, NodeMetricsSnapshot& out) const {
         auto it = nodes_.find(id);
-        if (it == nodes_.end() || !it->second.metrics) return false;
-        out = it->second.metrics->Snapshot();
+        if (it == nodes_.end() || !it->second->metrics) return false;
+        out = it->second->metrics->Snapshot();
         return true;
     }
 
 private:
-    std::unordered_map<std::string, NodeContext> nodes_;
+    void StopStartedExecutors(const std::unordered_set<IExecutor*>& started) {
+        for (auto* executor : started) {
+            if (executor) {
+                executor->Stop();
+            }
+        }
+    }
+
+    std::unordered_map<std::string, std::unique_ptr<NodeContext>> nodes_;
     std::vector<std::shared_ptr<IEdgeContext>> edges_;
     std::shared_ptr<IScheduler> scheduler_;
+    bool running_{false};
 };
 
 }

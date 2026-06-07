@@ -90,14 +90,18 @@ class InputPort {
 
 #### OutputPort\<T\>
 
-节点的数据发送接口：
+节点的数据发送接口。`Send` 针对单下游 / 多下游做了区分：
+
+- **单下游**：直接 `std::move` 转发，保持 move-only 语义
+- **多下游**：编译期检查 `std::is_copy_constructible_v<T>`，每个 downstream 拷贝一份
+- `Send` 返回 `true` 表示下游 `Accepted || DroppedOldest`（数据最终被处理）
 
 ```cpp
 template<typename T>
 class OutputPort {
     using Type = T;
-    void AddTransport(shared_ptr<ITransport<T>>);  // 注册下游传输通道
-    void Send(T data);                              // 广播数据到所有下游
+    void AddTransport(shared_ptr<ITransport<T>>);
+    bool Send(T data);    // 单下游 move，多下游 copy
 };
 ```
 
@@ -107,42 +111,56 @@ class OutputPort {
 
 #### ITransport\<T\>
 
-传输通道纯虚接口：
+传输通道接口（v2 —— 全面改用 `std::optional<T>` 避免默认构造，`Send` 返回 `MailboxPushResult` 以精确统计每种背压结果）：
 
 ```cpp
 template<typename T>
 class ITransport {
-    virtual bool Send(T data) = 0;
-    virtual bool Receive(T& data) = 0;
+    virtual MailboxPushResult Send(T data) = 0;    // 返回背压结果
+    virtual std::optional<T> TryReceive() = 0;     // 非阻塞取，无默认构造
+    virtual std::optional<T> Receive() = 0;        // 阻塞取，无默认构造
+    virtual void Close() = 0;
+    virtual bool Empty() const = 0;
+    virtual std::size_t Size() const = 0;
 };
+```
+
+`MailboxPushResult` 枚举：
+
+```cpp
+enum class MailboxPushResult { Accepted, DroppedNewest, DroppedOldest, Closed };
 ```
 
 #### QueueTransport\<T\>
 
-基于无锁 SPSC Mailbox 的异步传输，带背压策略和通知回调：
+基于无锁 SPSC Mailbox 的异步传输，带背压策略和通知回调。`Send` 自动调用 `on_send_result_` 回调供 Graph 累加 metrics：
 
 ```cpp
 template<typename T>
 class QueueTransport : public ITransport<T> {
-    // 构造参数：容量，背压策略（DropOldest/DropNewest/Block/Unbounded）
     explicit QueueTransport(size_t capacity = 64,
                             BackpressurePolicy policy = BackpressurePolicy::DropOldest);
-
-    void SetNotifyCallback(NotifyCallback cb);  // 数据入队时的通知回调
-    bool Send(T data) override;                  // mailbox.Push + notify
-    bool Receive(T& data) override;              // mailbox.WaitPop
+    void SetNotifyCallback(NotifyCallback cb);
+    void SetSendResultCallback(SendResultCallback cb);
+    MailboxPushResult Send(T data) override;
+    std::optional<T> TryReceive() override;    // → mailbox_.TryPopValue()
+    std::optional<T> Receive() override;       // → mailbox_.WaitPopValue()
 };
 ```
 
 #### DirectTransport\<T\>
 
-同线程同步直传，无缓冲：
+同线程同步直传，无缓冲。`Send()` 直接调用下游 `consumer_`，`TryReceive()` / `Receive()` 返回 `nullopt`（它不参与 Drain 循环）：
 
 ```cpp
 template<typename T>
 class DirectTransport : public ITransport<T> {
-    bool Send(T data) override;      // 直接覆盖 buffer
-    bool Receive(T& data) override;  // 读取 buffer
+    void SetConsumer(Consumer consumer);               // 下游消费函数
+    void SetSendResultCallback(SendResultCallback cb);
+    MailboxPushResult Send(T data) override;           // 直接调 consumer_
+    std::optional<T> TryReceive() override;            // 返回 nullopt
+    std::optional<T> Receive() override;               // 返回 nullopt
+    void Close() override;
 };
 ```
 
@@ -158,7 +176,6 @@ IMailBox<T> (接口)
 
 ```cpp
 enum class BackpressurePolicy { Block, DropNewest, DropOldest, Unbounded };
-enum class MailboxPushResult { Accepted, DroppedNewest, DroppedOldest, Closed };
 ```
 
 > `QueueTransport` 目前使用 SPSCMailBox。若需多生产者场景，可改为 MPMCMailBox。
@@ -227,19 +244,23 @@ protected:
 
 #### IScheduler
 
+接收 `shared_ptr<IEdgeContext>`，避免裸指针生命周期问题：
+
 ```cpp
 class IScheduler {
-    virtual void Notify(IEdgeContext* edge) = 0;
+    virtual bool Notify(std::shared_ptr<IEdgeContext> edge) = 0;
 };
 ```
 
 #### FIFOScheduler
 
-收到通知后立即向目标 Executor Post Drain 任务：
+收到通知后向目标 Executor Post Drain 任务，内部通过 `shared_ptr` 捕获 edge，确保任务延迟执行时 edge 仍然存活：
 
 ```cpp
-void Notify(IEdgeContext* edge) override {
-    edge->GetDestination()->executor->Post([edge]() {
+bool Notify(std::shared_ptr<IEdgeContext> edge) override {
+    auto* dst_ctx = edge->GetDestination();
+    if (!dst_ctx || !dst_ctx->executor) return false;
+    return dst_ctx->executor->Post([edge = std::move(edge)]() {
         edge->ExecuteDrain();
     });
 }
@@ -266,14 +287,39 @@ class IExecutor {
 
 #### AsioExecutor
 
-基于 `boost::asio::io_context` 的线程池实现：
+基于 `boost::asio::io_context` 的线程池实现。所有 mutable 状态（accepting / running / pending）打包到 `shared_ptr<State>` 中，lambda 捕获 `state` 而非裸 `this`。`Stop()` 会等待 `pending == 0` 确保所有已投递任务完成，条件变量通知：
 
 ```cpp
 class AsioExecutor : public IExecutor {
-    // pool_name: 命名线程池（"general", "cpu", "inference", "io" 等）
-    // pool_size: 线程数（0 = hardware_concurrency）
     AsioExecutor(std::string name, std::string pool_name, size_t pool_size = 0);
+    bool Start() override;
+    void Stop() override;  // wait pending == 0
+    bool Post(Task task) override;
 };
+```
+
+内部 `State` 结构：
+
+```cpp
+struct State {
+    std::atomic_bool accepting{false};
+    std::atomic_bool running{false};
+    std::atomic<size_t> pending{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+};
+```
+
+`Post()` 内 lambda 捕获 `state` 而非 `this`，任务完成时 `fetch_sub(1) == 1` 检查是否最后一个任务，只通知一次 `cv`：
+
+```cpp
+boost::asio::post(io_ctx, [state, task = std::move(task)]() mutable {
+    try { task(); } catch (...) {}
+    if (state->pending.fetch_sub(1) == 1) {
+        std::lock_guard lock(state->mutex);
+        state->cv.notify_all();
+    }
+});
 ```
 
 #### AsioIOContextPoolManager
@@ -297,15 +343,15 @@ AsioIOContextPoolManager::StopAll();                       // 程序退出时清
 
 ```cpp
 class Graph {
-    // 添加节点，编译期自动检测 Input()/Output() 端口并注册
+    // 添加节点，编译期自动检测 Input()/Output() 端口并注册。返回 id（失败返回空串）
     template<typename T, typename... Args>
-    void AddNode(std::string id,
-                 std::shared_ptr<IExecutor> executor,
-                 Args&&... args);
+    std::string AddNode(std::string id,
+                        std::shared_ptr<IExecutor> executor,
+                        Args&&... args);
 
-    // 连接节点，创建 EdgeContext<T> 并绑定端口
+    // 连接节点，创建 EdgeContext<T> 并绑定端口。返回是否成功
     template<typename T>
-    void Connect(const std::string& src,
+    bool Connect(const std::string& src,
                  const std::string& dst,
                  TransportType type = TransportType::Queue,
                  size_t capacity = 64,
@@ -314,49 +360,91 @@ class Graph {
     void SetScheduler(std::shared_ptr<IScheduler> scheduler);
 
     bool Start();       // → Init → Executor::Start → INode::Start
-    void Stop();        // → INode::Stop → Executor::Stop → INode::Deinit
+    void Stop();        // → Node::Stop → edge Close → Dispatch Close → Exec Stop → Deinit
     bool GetMetrics(id, NodeMetricsSnapshot&);
 };
 ```
 
 #### NodeContext
 
+每个节点持有独立的序列化 `Dispatch` 队列。`Dispatch(task)` 在默认 `Serialized` 模式下将 task 排入队列，由单次 `Post` 依次消费，保证同一节点不同上游 edge 不会并发 `Process`：
+
 ```cpp
+enum class NodeExecutionMode { Serialized, Concurrent };
+
+struct NodeOptions {
+    NodeExecutionMode execution_mode{NodeExecutionMode::Serialized};
+};
+
 struct NodeContext {
     std::string id;
     std::shared_ptr<INode> node;
     std::shared_ptr<IExecutor> executor;
     std::shared_ptr<NodeMetrics> metrics;
-    // 端口访问表（类型擦除，Connect<T> 时查找）
+    NodeExecutionMode execution_mode{NodeExecutionMode::Serialized};
+
     std::unordered_map<std::type_index, std::any> input_ports;
     std::unordered_map<std::type_index, std::any> output_ports;
+
+    bool Dispatch(Task task);      // 序列化/并发 模式
+    void CloseDispatch();          // Stop 时关闭
+    void OpenDispatch();           // Start 时打开
 };
 ```
 
-#### EdgeContext\<T\>
+#### IEdgeContext / EdgeContext\<T\>
+
+`TrySchedule()` 封装 CAS + 调度 + 异常处理，全部使用 `weak_ptr` 持有调度器和 metrics 以避免异步生命周期问题：
 
 ```cpp
+class IEdgeContext : public std::enable_shared_from_this<IEdgeContext> {
+    bool TrySchedule();            // CAS → scheduler.Notify → 失败复位 + rejected
+    virtual void ExecuteDrain() = 0;
+    virtual void Close() = 0;     // 关闭 transport
+    virtual bool Empty() const = 0;
+
+    std::atomic<bool> scheduled{false};
+    std::weak_ptr<IScheduler> scheduler_;
+    std::weak_ptr<NodeMetrics> dst_metrics_;
+    NodeContext* dst_{nullptr};
+};
+
 template<typename T>
 class EdgeContext : public IEdgeContext {
-    std::shared_ptr<QueueTransport<T>> transport;  // 数据通道
-    Consumer<T> consumer_;                         // 类型安全的消费者
-    NodeContext* dst_;                             // 下游节点上下文
-    IScheduler* scheduler_;                        // 调度器
+    std::shared_ptr<ITransport<T>> transport;
+    Consumer<T> consumer_;
 
-    // 核心：从 transport 读取所有数据，调用 consumer_
     void ExecuteDrain() override {
-        T msg;
-        while (transport->Receive(msg)) {
-            consumer_(std::move(msg));
-        }
-        scheduled.store(false);
-        if (!transport->Empty()) { CAS → Notify }
-    }
+        struct ScheduleReset {
+            EdgeContext* edge;
+            ~ScheduleReset() {            // RAII：无论异常都复位 scheduled
+                edge->scheduled.store(false);
+                if (!edge->transport->Empty()) edge->TrySchedule();
+            }
+        } reset{this};
 
-    // CAS 防止重复投递 Drain 任务
-    std::atomic<bool> scheduled{false};
+        while (transport) {
+            auto msg = transport->TryReceive();   // 非阻塞，队列空立刻退出
+            if (!msg.has_value()) break;
+
+            auto* dst = GetDestination();
+            dst->Dispatch([consumer = consumer_, metrics = dst_metrics_, msg = std::move(*msg)]() {
+                try {
+                    consumer(std::move(msg));
+                    if (auto m = metrics.lock()) m->processed.fetch_add(1);
+                } catch (...) {
+                    if (auto m = metrics.lock()) m->errors.fetch_add(1);
+                }
+            });
+        }
+    }
 };
 ```
+
+`ScheduleReset` RAII 守卫确保：
+- `scheduled` 无论如何都会复位（正常 drain 完 / 异常 / 提前 break）
+- 如果复位后 transport 仍有数据，立即 `TrySchedule()` 继续消费
+- `consumer_` 的异常被捕获到 `errors` 计数器，不会影响 scheduled 状态
 
 #### NodeMetrics
 
@@ -427,15 +515,17 @@ class Runtime {
 │ Infer 的 Executor 线程上：                                                │
 │                                                                          │
 │  EdgeContext::ExecuteDrain()                                             │
-│    ├─ while (transport.Receive(packet))   ← mailbox.Pop                 │
-│    │      consumer_(packet)                                              │
-│    │        → InputPort<MP>::Receive(packet)                            │
-│    │          → handler_(packet)                                         │
-│    │            → InferNode::Process(packet)        ← 业务逻辑           │
-│    │              → Emit(result)                    ← 可能发往下游       │
+│    ├─ ScheduleReset RAII guard (即使异常也复位 scheduled)                │
 │    │                                                                     │
-│    ├─ scheduled.store(false)                          ← CAS 复位         │
-│    └─ if (!transport.Empty()) { CAS true → Notify }   ← 继续消费        │
+│    ├─ while (transport.TryReceive(packet))   ← 非阻塞 TryPopValue       │
+│    │      → dst->Dispatch([consumer, metrics, msg]() {                  │
+│    │          try { consumer(msg); metrics->processed++; }               │
+│    │          catch(...) { metrics->errors++; }                          │
+│    │      })    ← 序列化/并发 由 NodeContext 的 Dispatch 模式决定        │
+│    │             ↑ 注意：Direct 不走此路径，Send 内直接调 consumer_     │
+│    │                                                                     │
+│    ├─ ~ScheduleReset(): scheduled.store(false)                          │
+│    └─ if (!transport.Empty()) { TrySchedule() → CAS → Notify }          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -636,6 +726,54 @@ runtime/include/
 └── runtime/
     ├── i_runtime.h
     └── runtime.h
+```
+
+---
+
+## 修复记录
+
+### P0 — 死锁 / 空转 / 安全性
+#### 20260607：
+| 问题 | 修复 |
+|------|------|
+| **`ExecuteDrain()` 阻塞/忙等** | 改用 `TryReceive()` 非阻塞消费当前批次，队列空立刻退出。RAII `ScheduleReset` 在析构时复位 `scheduled` 并在必要时重新 Notify，彻底避免 spin 和永久阻塞 |
+| **裸指针异步捕获** | `Scheduler::Notify` 改为接收 `shared_ptr<IEdgeContext>`；lambda 捕获 `shared_ptr` 而非 `this*`，确保任务延迟执行时 edge 仍存活 |
+| **`AsioExecutor::Post()` 捕获裸 `this`** | 所有 mutable 状态（accepting / running / pending）打包到 `shared_ptr<State>`，lambda 捕获 `state`。`Stop()` 通过 `cv.wait(..., pending==0)` 等待所有已投递任务完成 |
+
+### P1 — 状态卡死 / 错误处理
+
+| 问题 | 修复 |
+|------|------|
+| **scheduled 永久卡死** | `TrySchedule()` 调度失败时立即复位 `scheduled` 并递增 `rejected`。RAII `ScheduleReset` 保证 `scheduled` 在异常或正常退出时均被复位 |
+| **consumer 异常导致 scheduled 未复位** | `ExecuteDrain()` 内 `consumer_` 的异常被 `try-catch` 并计入 `errors`，`ScheduleReset` 析构时总会复位 scheduled |
+| **DirectTransport 假接入** | `Connect<T>(Direct)` 现在实际创建 `DirectTransport<T>`，`Send` 内部直接调用下游 `consumer_`，不再伪装成 Queue |
+| **`Connect` 无返回值** | 改为 `bool Connect(...)`，port 不匹配、节点不存在、scheduler 未设置时返回 `false` |
+| **`AddNode` 重复 id 覆盖** | 重复 id 返回空字符串 `{}`，不覆盖已有节点 |
+| **`Start` 不检查返回值** | 逐阶段检查 `Init` / `Executor::Start` / `Node::Start` 返回值，失败后部分回滚已启动的 executor |
+
+### P2 — 完备性 / 泛型 / 语义
+
+| 问题 | 修复 |
+|------|------|
+| **Metrics 未全量计数** | `enqueued` / `processed` / `dropped` / `rejected` / `errors` 五个计数器全部正确递增。`Send` 结果回调 `count_send_result` 精确区分 Accepted / DroppedOldest（enqueued+1） / DroppedNewest（只计 dropped） / Closed（计 rejected） |
+| **背压语义不准确** | `ITransport::Send()` 返回 `MailboxPushResult`，DroppedNewest 不再混为 Accepted。`OutputPort::IsAccepted` 仅将 `Accepted` 和 `DroppedOldest`（因旧帧被淘汰）视为成功 |
+| **Drain 要求 `T{}` 默认构造** | `TryReceive()` 返回 `std::optional<T>`，彻底消除默认构造依赖 |
+| **SPSC/MPMC DropOldest 和对多下游 Clear 要求默认构造** | DropOldest 和 Clear 改用非默认构造路径（SPSC 用 `queue_.clear()` / MPMC 用 `pop` 循环） |
+| **单下游 move-only 无法移动发送** | `OutputPort::Send` 对单下游做 `std::move(data)`，多下游才要求 `is_copy_constructible_v<T>` |
+| **未实现 Node 级串行化** | `NodeContext::Dispatch` 提供 `Serialized`（默认）和 `Concurrent` 两种模式。`Serialized` 模式下同一节点的多个上游 edge 不会并发 `Process` |
+
+---
+
+## 视频流水线里目前还需要注意的缺陷：
+
+```plaintext
+同一个 node 如果有多条输入 edge，仍可能被多个 edge 并发调用，需要 node 级 strand/serialized executor。 √
+port 只按 type_index 匹配，同类型多输入/多输出不好表达，需要命名端口。
+多下游 fan-out 对大帧/move-only 对象仍不理想，视频帧建议统一 shared_ptr 或引入 clone/zero-copy fanout 策略。
+背压只是单 edge 局部策略，还缺全链路水位、限流、关键帧优先、丢非关键帧策略。
+缺少 per-stream 顺序、时间戳 watermark、同步节点聚合策略。
+GPU 推理还缺 batching、优先级、队列延迟指标和超时丢帧策略。
+Stop 目前偏“停止并关闭”，还没有可配置的 drain/flush/discard shutdown policy。
 ```
 
 ## 构建

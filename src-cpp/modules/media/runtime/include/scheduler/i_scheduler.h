@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 namespace runtime {
 
 class IEdgeContext;
@@ -7,7 +9,7 @@ class IEdgeContext;
 class IScheduler {
 public:
     virtual ~IScheduler() = default;
-    virtual void Notify(IEdgeContext* edge) = 0;
+    virtual bool Notify(std::shared_ptr<IEdgeContext> edge) = 0;
 };
 
 }

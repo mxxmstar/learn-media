@@ -11,8 +11,11 @@
 #include <boost/asio/post.hpp>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "i_executor.h"
@@ -27,28 +30,35 @@ public:
 
     explicit AsioExecutor(std::string name, std::string pool_name, std::size_t pool_size)
         : name_(std::move(name))
-        , pool_name_(std::move(pool_name)) {
+        , pool_name_(std::move(pool_name))
+        , state_(std::make_shared<State>()) {
         initializePool(pool_name_, pool_size);
     }
 
-    ~AsioExecutor() { Stop(); }
+    ~AsioExecutor() override {
+        Stop();
+    }
 
     AsioExecutor(const AsioExecutor&) = delete;
     AsioExecutor& operator=(const AsioExecutor&) = delete;
 
     bool Start() override {
-        if (running_.exchange(true)) {
-            return false;
-        }
-        accepting_.store(true);
+        state_->accepting.store(true);
+        state_->running.store(true);
         return true;
     }
 
     void Stop() override {
-        if (!running_.exchange(false)) {
+        if (!state_->running.exchange(false)) {
+            state_->accepting.store(false);
             return;
         }
-        accepting_.store(false);
+
+        state_->accepting.store(false);
+        std::unique_lock<std::mutex> lock(state_->mutex);
+        state_->cv.wait(lock, [state = state_]() {
+            return state->pending.load() == 0;
+        });
     }
 
     /// @brief 停止所有线程池（程序退出时调用）
@@ -56,26 +66,36 @@ public:
         AsioIOContextPoolManager::StopAll();
     }
 
-    bool Post(Task task) {
-        if (!accepting_.load()) {
+    bool Post(Task task) override {
+        if (!state_->accepting.load()) {
             return false;
         }
-        pending_.fetch_add(1);
+
+        state_->pending.fetch_add(1);
 
         try {
             auto& pool = AsioIOContextPoolManager::GetInstance(pool_name_);
             auto& io_ctx = pool.GetIOContext();
-            boost::asio::post(io_ctx, [this, task = std::move(task)]() mutable {
+            auto state = state_;
+            boost::asio::post(io_ctx, [state, task = std::move(task)]() mutable {
                 try {
                     task();
                 } catch (...) {
                 }
-                pending_.fetch_sub(1);
+
+                if (state->pending.fetch_sub(1) == 1) {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->cv.notify_all();
+                }
             });
         } catch (...) {
-            pending_.fetch_sub(1);
+            if (state_->pending.fetch_sub(1) == 1) {
+                std::lock_guard<std::mutex> lock(state_->mutex);
+                state_->cv.notify_all();
+            }
             return false;
         }
+
         return true;
     }
 
@@ -92,10 +112,18 @@ public:
     }
 
     std::size_t Pending() const {
-        return pending_.load();
+        return state_->pending.load();
     }
 
 private:
+    struct State {
+        std::atomic_bool accepting{false};
+        std::atomic_bool running{false};
+        std::atomic<std::size_t> pending{0};
+        std::mutex mutex;
+        std::condition_variable cv;
+    };
+
     static void initializePool(const std::string& pool_name, std::size_t pool_size) {
         if (!AsioIOContextPoolManager::Exists(pool_name)) {
             if (pool_size == 0) {
@@ -107,9 +135,7 @@ private:
 
     std::string name_;
     std::string pool_name_;
-    std::atomic_bool accepting_{false};
-    std::atomic<std::size_t> pending_{0};
-    std::atomic<bool> running_{false};
+    std::shared_ptr<State> state_;
 };
 
 class SingleThreadAsioExecutor : public AsioExecutor {

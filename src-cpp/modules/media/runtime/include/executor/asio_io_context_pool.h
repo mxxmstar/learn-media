@@ -21,19 +21,18 @@ public:
         : next_io_context_index_(0), is_running_(true) {
         if (pool_size == 0) pool_size = 1;
 
-        pool_.reserve(pool_size);
         work_guards_.reserve(pool_size);
 
         for (std::size_t i = 0; i < pool_size; ++i) {
-            pool_.emplace_back();
-            work_guards_.emplace_back(boost::asio::make_work_guard(pool_.back()));
+            pool_.push_back(std::make_unique<IOContext>());
+            work_guards_.emplace_back(boost::asio::make_work_guard(*pool_.back()));
         }
 
         threads_.reserve(pool_size);
         for (std::size_t i = 0; i < pool_size; ++i) {
             threads_.emplace_back([this, i]() {
                 try {
-                    pool_[i].run();
+                    pool_[i]->run();
                 } catch (const std::exception& e) {
                 } catch(...) {
                 }
@@ -54,7 +53,7 @@ public:
             throw std::runtime_error("AsioIOContextPool has been stopped");
         }
         auto index = next_io_context_index_.fetch_add(1) % pool_.size();
-        return pool_[index];
+        return *pool_[index];
     }
 
     /// @brief 停止线程池
@@ -66,7 +65,7 @@ public:
         work_guards_.clear();
 
         for (auto& io_ctx : pool_) {
-            boost::asio::post(io_ctx, []() {});
+            boost::asio::post(*io_ctx, []() {});
         }
 
         for (auto& thread : threads_) {
@@ -87,7 +86,7 @@ public:
     }
 
 private:
-    std::vector<IOContext> pool_;
+    std::vector<std::unique_ptr<IOContext>> pool_;
     std::vector<WorkGuard> work_guards_;
     std::vector<std::thread> threads_;
     std::atomic<std::size_t> next_io_context_index_{0};
