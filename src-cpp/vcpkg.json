@@ -24,10 +24,8 @@
     "grpc",
     "protobuf",
     "zeromq",
-    "nlohmann-json",
     "yaml-cpp",
     "libdatachannel",
-    "sqlite3",
-    "async-simple"
+    "sqlite3"
   ]
 }

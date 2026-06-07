@@ -8,8 +8,10 @@ impl<S, N> FormatEvent<S, N> for CustomFormatter
 where
     // S: tracing_subscriber::registry::LookupSpan<'a> + 'a,
     // N: for<'writer> FormatFields<'writer> + 'static,
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
+    // for<'a> tracing_subscriber::registry::LookupSpan<'a>   
+    //对于任意可能的生命周期 'a，类型 S 都必须满足 LookupSpan<'a>
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,  // S 必须是一个 Subscriber,且对所有 'a 都能查找 span
+    N: for<'a> FormatFields<'a> + 'static,  // N 对所有 'a 都能格式化字段,且 N 不含短生命周期的引用
 {
     fn format_event(
         &self, 
@@ -17,7 +19,6 @@ where
         mut writer: format::Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
-        // 时间戳
         // 时间戳
         let timestamp = OffsetDateTime::now_utc();
         let format_description = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]")

@@ -35,9 +35,10 @@ src-cpp/modules/*/test/*.bak
 vcpkg/
 vcpkg_installed/
 build/
+.vs/
 bin/
 lib/
 CMakeFiles/
-.vs/
+target/
 *.bak
 CMakeCache.txt

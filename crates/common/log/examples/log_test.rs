@@ -1,4 +1,4 @@
-use media_ai_log::{LogConfig, init_logger, log_info, log_error, log_debug, log_warn};
+use crates_log::{LogConfig, init_logger, log_info, log_error, log_debug, log_warn};
 
 fn main() {
     // 创建日志配置
