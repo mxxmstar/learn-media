@@ -6,10 +6,13 @@
     project(media_module LANGUAGES C CXX)
     set(CMAKE_CXX_STANDARD 20)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    option(BUILD_TESTS "Build tests" ON)
-    option(BUILD_MEDIA_TESTS "Build media defines tests" ON)
-    option(BUILD_PULLER_TESTS "Build media puller tests" ON)
-    option(BUILD_DECODER_TESTS "Build media decoder tests" ON)
+option(BUILD_TESTS "Build tests" ON)
+option(BUILD_MEDIA_TESTS "Build media defines tests" ON)
+option(BUILD_STREAM_TESTS "Build media stream tests" ON)
+option(BUILD_PULLER_TESTS "Build media puller tests" ON)
+option(BUILD_DECODER_TESTS "Build media decoder tests" ON)
+option(BUILD_ENCODER_TESTS "Build media encoder tests" ON)
+option(BUILD_MEDIA_PUSHER_TESTS "Build media pusher tests" ON)
     if(BUILD_TESTS)
         enable_testing()
     endif()
@@ -31,8 +34,11 @@ endif()
 set(MEDIA_SUBMODULES
     runtime
     defines
+    stream
     puller
     decoder
+    encoder
+    pusher
 )
 
 foreach(submodule ${MEDIA_SUBMODULES})

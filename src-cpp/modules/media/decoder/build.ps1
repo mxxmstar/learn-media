@@ -8,7 +8,7 @@ param(
 )
 
 & (Join-Path $PSScriptRoot '..\..\..\script\build-module.ps1') `
-    -ModuleName 'media/defines' `
+    -ModuleName 'media/decoder' `
     -SourceDir $PSScriptRoot `
     -Action $Action `
     -Config $Config `

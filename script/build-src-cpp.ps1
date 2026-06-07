@@ -69,11 +69,11 @@ function Get-TestOptions {
 
     switch -Wildcard ($TargetName) {
         "all" {
-            $options += @("BUILD_MEDIA_TESTS", "BUILD_PULLER_TESTS", "BUILD_DECODER_TESTS")
+            $options += @("BUILD_MEDIA_TESTS", "BUILD_STREAM_TESTS", "BUILD_PULLER_TESTS", "BUILD_DECODER_TESTS", "BUILD_ENCODER_TESTS", "BUILD_MEDIA_PUSHER_TESTS")
             break
         }
         "media" {
-            $options += @("BUILD_MEDIA_TESTS", "BUILD_PULLER_TESTS", "BUILD_DECODER_TESTS")
+            $options += @("BUILD_MEDIA_TESTS", "BUILD_STREAM_TESTS", "BUILD_PULLER_TESTS", "BUILD_DECODER_TESTS", "BUILD_ENCODER_TESTS", "BUILD_MEDIA_PUSHER_TESTS")
             break
         }
         "media/defines" {
@@ -86,6 +86,18 @@ function Get-TestOptions {
         }
         "media/decoder" {
             $options += "BUILD_DECODER_TESTS"
+            break
+        }
+        "media/encoder" {
+            $options += "BUILD_ENCODER_TESTS"
+            break
+        }
+        "media/pusher" {
+            $options += "BUILD_MEDIA_PUSHER_TESTS"
+            break
+        }
+        "media/stream" {
+            $options += "BUILD_STREAM_TESTS"
             break
         }
     }
@@ -539,7 +551,7 @@ function Invoke-Build {
     }
 
     Reset-BuildDirIfConfigureCacheChanged -TargetInfo $TargetInfo -DesiredManifestMode $desiredManifestMode
-    Invoke-DeveloperCmd -Step "cmake configure $($TargetInfo.Name)" -Command "cmake $cmakeArgs"
+    Invoke-DeveloperCmd -Step "cmake configure $($TargetInfo.Name)" -Command "cmake --no-warn-unused-cli $cmakeArgs"
     Invoke-DeveloperCmd -Step "cmake build $($TargetInfo.Name)" -Command "cmake --build `"$buildDir`" --config $Config"
 
     if ($RunTests) {

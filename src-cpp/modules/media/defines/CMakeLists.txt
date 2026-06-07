@@ -28,19 +28,12 @@ endif()
 
 # ── Library target ──
 file(GLOB DEFINES_SOURCES "src/*.cpp")
-file(GLOB STREAM_SOURCES "../stream/src/*.cpp")
 
-add_library(media_defines_lib STATIC ${DEFINES_SOURCES} ${STREAM_SOURCES})
+add_library(media_defines_lib STATIC ${DEFINES_SOURCES})
 
 target_include_directories(media_defines_lib
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../stream/include>
-        $<INSTALL_INTERFACE:include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../puller/include>
-        $<INSTALL_INTERFACE:include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../decoder/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -48,6 +41,8 @@ target_include_directories(media_defines_lib
 find_path(FFMPEG_INCLUDE_DIR
     NAMES libavcodec/avcodec.h
     PATHS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include"
+        "${CMAKE_PREFIX_PATH}/include"
         "/vcpkg/packages/ffmpeg_x64-windows/include"
         "/vcpkg_installed/x64-windows/include"
         /usr/include
@@ -57,6 +52,10 @@ find_path(FFMPEG_INCLUDE_DIR
 find_library(AVCODEC_LIBRARY
     NAMES avcodec
     PATHS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+        "${CMAKE_PREFIX_PATH}/debug/lib"
+        "${CMAKE_PREFIX_PATH}/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/debug/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/lib"
 )
@@ -64,6 +63,10 @@ find_library(AVCODEC_LIBRARY
 find_library(AVFORMAT_LIBRARY
     NAMES avformat
     PATHS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+        "${CMAKE_PREFIX_PATH}/debug/lib"
+        "${CMAKE_PREFIX_PATH}/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/debug/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/lib"
 )
@@ -71,6 +74,10 @@ find_library(AVFORMAT_LIBRARY
 find_library(AVUTIL_LIBRARY
     NAMES avutil
     PATHS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+        "${CMAKE_PREFIX_PATH}/debug/lib"
+        "${CMAKE_PREFIX_PATH}/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/debug/lib"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/lib"
 )
