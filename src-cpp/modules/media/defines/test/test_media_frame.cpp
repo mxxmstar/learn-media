@@ -5,7 +5,7 @@
 #include "defines/media_frame.h"
 #include "defines/media_buffer.h"
 #include "defines/i_media_buffer.hpp"
-#include "log/logmanager.h"
+#include "common/log/logmanager.h"
 #include <cassert>
 #include <cstring>
 #include <cstdlib>

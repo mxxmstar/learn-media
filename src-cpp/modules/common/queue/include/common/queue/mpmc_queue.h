@@ -1,7 +1,7 @@
 #pragma once
 
-#include "queue/concurrentqueue.h"
-#include "queue/blockingconcurrentqueue.h"
+#include "common/queue/concurrentqueue.h"
+#include "common/queue/blockingconcurrentqueue.h"
 
 #include <cstddef>
 

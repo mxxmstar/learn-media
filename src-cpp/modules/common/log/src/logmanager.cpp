@@ -1,5 +1,5 @@
-#include "log/logmanager.h"
-#include "config/config.h"
+#include "common/log/logmanager.h"
+#include "common/config/config.h"
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <chrono>
