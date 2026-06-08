@@ -46,11 +46,14 @@ public:
     bool                return_null_packet{false};  // 返回空包（非目标流跳过）
     bool                return_error{false};        // ReadPacket 返回 false
     int                 max_reads{-1};              // -1 无限制，>=0 后返回 error
+    int                 connect_fail_after{-1};     // -1 永不失败，>=0 表示第 N+1 次 Open 开始失败
 
     StreamInfo          stream_info;
 
     bool Open(const std::string& url) override {
         connect_count++;
+        if (connect_fail_after >= 0 && connect_count > connect_fail_after)
+            return false;
         return connect_result.load();
     }
 
@@ -267,7 +270,7 @@ static void test_reconnect_limit() {
     auto session = std::make_shared<StreamSession>(ctx.io);
     auto puller = std::make_unique<MockPuller>();
     puller->return_error = true;
-    puller->connect_result = false;
+    puller->connect_fail_after = 1;  // 第 1 次 Open 成功（Start），之后的重连 Open 失败
     session->SetPuller(std::move(puller));
     session->SetUrl("rtsp://test");
     session->SetReconnectIntervalMs(5);

@@ -25,6 +25,7 @@
 
 static std::string TestUrl() {
     const char* env = std::getenv("TEST_RTSP_URL");
+    // return env ? std::string(env) : "rtsp://192.168.66.166/live/mainstream";
     return env ? std::string(env) : "rtsp://192.168.66.219/live/mainstream";
 }
 

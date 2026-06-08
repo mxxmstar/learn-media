@@ -41,8 +41,9 @@ bool FFmpegProtocolAdapter::Connect(const PusherConfig& config) {
 
     config_ = config;
 
+    // TODO: 格式设置
     const char* format_name = config_.format_name.empty()
-        ? nullptr
+        ? (StartsWithRtsp(config_.url) ? "rtsp" : nullptr)
         : config_.format_name.c_str();
 
     int ret = avformat_alloc_output_context2(

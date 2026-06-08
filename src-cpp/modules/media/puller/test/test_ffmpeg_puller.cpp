@@ -138,7 +138,9 @@ static void test_get_stream_info_after_open() {
     TEST("GetStreamInfo() after Open returns non-empty info");
     FFmpegPuller puller;
     // puller.SetCredentials("admin", "3225");
-    puller.Open("rtsp://192.168.10.7/live/mainstream");
+    // puller.Open("rtsp://192.168.10.7/live/mainstream");
+    // puller.Open("rtsp://192.168.66.166/live/mainstream");
+    puller.Open("rtsp://192.168.66.218/live/mainstream");
     StreamInfo info = puller.GetStreamInfo();
     info.Dump();
     assert(info.stream_index != -1);

@@ -39,6 +39,7 @@ set(MEDIA_SUBMODULES
     decoder
     encoder
     pusher
+    demo
 )
 
 foreach(submodule ${MEDIA_SUBMODULES})

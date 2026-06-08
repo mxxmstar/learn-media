@@ -687,6 +687,333 @@ RtspSource_2 ──┘
 
 ---
 
+## 完整 Demo：拉流 - 解码 - 编码 - 推流
+
+`src-cpp/modules/media/demo/runtime_transcode_demo.cpp` 是一个基于 Runtime 的完整媒体流水线示例。它把已有的 FFmpeg 拉流器、解码器、编码器和推流器包装成 Runtime 节点，通过 `Graph` 连接成一条端到端链路：
+
+```
+PullStreamNode
+  │ PacketMessage = std::shared_ptr<MediaPacket>
+  ▼
+DecodeNode
+  │ FrameMessage = std::shared_ptr<MediaFrame>
+  ▼
+EncodeNode
+  │ PacketMessage = std::shared_ptr<MediaPacket>
+  ▼
+PushStreamNode
+```
+
+其中：
+
+- `PullStreamNode` 是 `SourceNode<PacketMessage>`，负责调用 `FFmpegPuller` 拉取压缩视频包。
+- `DecodeNode` 是 `TransformNode<PacketMessage, FrameMessage>`，负责调用 `FFmpegDecoder` 将压缩包解码成原始视频帧。
+- `EncodeNode` 是 `TransformNode<FrameMessage, PacketMessage>`，负责调用 `FFmpegEncoder` 将原始帧重新编码成目标码流。
+- `PushStreamNode` 是 `SinkNode<PacketMessage>`，负责调用 `IPusher::Create()` 创建推流器，并将编码后的包写到目标地址。
+
+### 数据类型
+
+demo 没有直接在节点间传递裸对象，而是使用 `shared_ptr`：
+
+```cpp
+using PacketMessage = std::shared_ptr<MediaPacket>;
+using FrameMessage = std::shared_ptr<MediaFrame>;
+```
+
+这样做有几个原因：
+
+- `MediaPacket` 和 `MediaFrame` 内部都可能持有 FFmpeg 后端对象，使用 `shared_ptr` 可以避免跨线程传递时发生不必要的大对象复制。
+- `OutputPort` 在单下游时会移动消息，多下游时才要求可复制。这里使用 `shared_ptr`，即使后续扩展 fan-out，也能保持较低成本。
+- FFmpeg buffer 生命周期跟随 `MediaPacket` / `MediaFrame`，下游节点处理完后自动释放。
+
+### 共享状态
+
+`PipelineState` 用于在不同节点之间共享少量运行时元信息：
+
+```cpp
+class PipelineState {
+public:
+    void SetStreamInfo(StreamInfo info);
+    bool TryGetStreamInfo(StreamInfo& out) const;
+
+    void SetEncoderConfig(EncoderConfig config,
+                          std::vector<std::uint8_t> extra_data);
+    bool TryGetEncoderConfig(EncoderConfig& config,
+                             std::vector<std::uint8_t>& extra_data) const;
+
+    PipelineStats stats;
+};
+```
+
+它主要保存两类数据：
+
+- `StreamInfo`：由拉流节点在 `FFmpegPuller::Open()` 成功后写入，供解码器和编码器初始化使用。
+- `EncoderConfig`：由编码节点第一次收到解码帧后生成，供推流节点构造 `PusherConfig`。
+
+这些数据不是编译期拓扑信息，而是运行时从实际流中探测出来的参数。比如宽高、源编码格式、extra data 等，都要等输入流打开后才知道。因此 demo 采用“按需初始化”的方式：节点 `Init()` 只做静态配置，真正依赖流参数的资源在首次处理数据时打开。
+
+`PipelineStats` 是一组原子计数器：
+
+```cpp
+struct PipelineStats {
+    std::atomic<std::uint64_t> pulled_packets;
+    std::atomic<std::uint64_t> decoded_frames;
+    std::atomic<std::uint64_t> encoded_packets;
+    std::atomic<std::uint64_t> pushed_packets;
+    std::atomic<std::uint64_t> decode_errors;
+    std::atomic<std::uint64_t> encode_errors;
+    std::atomic<std::uint64_t> push_errors;
+    std::atomic_bool source_finished;
+};
+```
+
+主循环每隔 5 秒打印一次统计，方便观察各阶段是否在持续工作。
+
+### 节点生命周期
+
+#### PullStreamNode
+
+`PullStreamNode` 继承：
+
+```cpp
+class PullStreamNode : public runtime::INode,
+                       public runtime::SourceNode<PacketMessage>
+```
+
+它的职责是产生数据：
+
+1. `Init()` 设置拉流参数，包括连接超时、读取超时、低延迟模式和 RTSP transport。
+2. `Start()` 调用 `FFmpegPuller::Open(input_url)` 打开输入流。
+3. 打开成功后读取 `StreamInfo`，写入 `PipelineState`。
+4. 启动独立读取线程，不断调用 `ReadPacket()`。
+5. 每读到一个有效 `MediaPacket`，调用 `Emit(std::move(packet))` 发送给下游。
+6. `Stop()` 设置停止标志、关闭 puller，并等待读取线程退出。
+
+独立读取线程是必要的，因为 source 节点需要主动生产数据，而 Runtime 的 `SourceNode` mixin 只提供输出端口，不会替 source 自动创建读取循环。
+
+#### DecodeNode
+
+`DecodeNode` 继承：
+
+```cpp
+class DecodeNode : public runtime::INode,
+                   public runtime::TransformNode<PacketMessage, FrameMessage>
+```
+
+它的核心在 `Process(PacketMessage packet)`：
+
+1. 第一次收到 packet 时，从 `PipelineState` 获取 `StreamInfo`。
+2. 使用 `FFmpegDecoder::Open(info)` 初始化解码器。
+3. 调用 `FFmpegDecoder::Decode(packet)`。
+4. 解码器通过 `SetFrameCallback()` 回调输出 `MediaFrame`。
+5. 回调里调用 `Emit(std::move(frame))` 把原始帧送到编码节点。
+
+这里使用延迟打开，是为了避免 `Graph::Start()` 阶段强依赖节点初始化顺序。只要拉流节点在开始发包之前写入了 `StreamInfo`，解码节点就能在收到首包时完成初始化。
+
+#### EncodeNode
+
+`EncodeNode` 继承：
+
+```cpp
+class EncodeNode : public runtime::INode,
+                   public runtime::TransformNode<FrameMessage, PacketMessage>
+```
+
+它在第一次收到解码帧时打开编码器：
+
+1. 从首帧读取实际宽高和像素格式。
+2. 从 `DemoOptions` 读取目标 codec、码率、帧率、GOP、encoder name、preset、tune 等参数。
+3. 构造 `EncoderConfig`。
+4. 调用 `FFmpegEncoder::Open(config)`。
+5. 将 `EncoderConfig` 写入 `PipelineState`，供推流节点初始化。
+6. 调用 `FFmpegEncoder::Encode(frame, packets)`。
+7. 对每个编码输出包调用 `Emit(std::move(packet))`。
+
+当前 demo 默认输出 H.264，并设置 `preset=ultrafast`、`tune=zerolatency`，适合低延迟实时流场景。
+
+如果源流编码格式与输出编码格式相同，demo 会把源流的 `extra_data` 透传给推流配置，用于 SPS/PPS 等头信息。对于更严格的生产级转码，建议从编码器上下文导出最新 extra data，而不是只复用源流 extra data。
+
+#### PushStreamNode
+
+`PushStreamNode` 继承：
+
+```cpp
+class PushStreamNode : public runtime::INode,
+                       public runtime::SinkNode<PacketMessage>
+```
+
+它是流水线终点：
+
+1. 第一次收到编码包时，从 `PipelineState` 获取 `EncoderConfig`。
+2. 用编码参数构造 `PusherConfig`。
+3. 调用 `IPusher::Create(config)` 创建推流器。
+4. 调用 `Connect()` 建立输出连接。
+5. 后续每个包调用 `Send(*packet)` 推送出去。
+
+如果连接失败，demo 会限制重试频率：两次连接尝试之间至少间隔 2 秒，避免下游服务不可用时疯狂重连。
+
+### Graph 构建
+
+demo 的 `BuildGraph()` 创建四个 executor：
+
+```cpp
+auto pull_exec = runtime.CreateExecutor("media_pull", "media_pull_io", 1);
+auto decode_exec = runtime.CreateExecutor("media_decode", "media_decode_cpu", 1);
+auto encode_exec = runtime.CreateExecutor("media_encode", "media_encode_cpu", 1);
+auto push_exec = runtime.CreateExecutor("media_push", "media_push_io", 1);
+```
+
+这样每个阶段都有独立执行资源：
+
+- 拉流：IO 型任务，读网络。
+- 解码：CPU 型任务，执行 FFmpeg decode。
+- 编码：CPU 型任务，执行 FFmpeg encode。
+- 推流：IO 型任务，写网络。
+
+节点添加：
+
+```cpp
+graph.AddNode<PullStreamNode>("pull", pull_exec, options, state);
+graph.AddNode<DecodeNode>("decode", decode_exec, state);
+graph.AddNode<EncodeNode>("encode", encode_exec, options, state);
+graph.AddNode<PushStreamNode>("push", push_exec, options, state);
+```
+
+节点连接：
+
+```cpp
+graph.Connect<PacketMessage>("pull", "decode",
+                             runtime::TransportType::Queue, 128,
+                             runtime::BackpressurePolicy::DropOldest);
+
+graph.Connect<FrameMessage>("decode", "encode",
+                            runtime::TransportType::Queue, 16,
+                            runtime::BackpressurePolicy::DropOldest);
+
+graph.Connect<PacketMessage>("encode", "push",
+                             runtime::TransportType::Queue, 64,
+                             runtime::BackpressurePolicy::DropOldest);
+```
+
+三条边都使用 `QueueTransport`，并采用 `DropOldest` 背压策略。实时流里延迟通常比完整保帧更重要，所以当下游处理不过来时，丢弃旧数据、保留新数据更符合实时预览和转推场景。
+
+### 启动流程
+
+`main()` 的流程如下：
+
+1. 初始化日志：`LogManager::getInstance().Init()`。
+2. 解析命令行参数到 `DemoOptions`。
+3. 注册 `SIGINT` / `SIGTERM`，支持 Ctrl+C 停止。
+4. 创建 `PipelineState`。
+5. 创建 `runtime::Runtime`。
+6. 调用 `BuildGraph()` 添加节点并连边。
+7. 调用 `runtime.Start()` 启动整个流水线。
+8. 主线程每秒检查一次停止条件：
+   - 收到 Ctrl+C。
+   - 源流结束。
+   - 达到 `--seconds` 指定的运行时间。
+9. 调用 `runtime.Stop()` 停止节点、关闭边、停止 executor。
+10. 调用 `runtime.ShutdownAllPools()` 关闭所有 Asio 线程池。
+
+### 命令行参数
+
+demo 支持以下参数：
+
+```plaintext
+--input <url>                拉流地址
+--output <url>               推流地址
+--seconds <n>                运行秒数，0 表示一直运行到 Ctrl+C
+--codec <h264|h265>          输出编码格式
+--bitrate <bps>              输出码率
+--fps <n|num/den>            输出帧率，例如 25 或 30000/1001
+--gop <n>                    GOP 大小
+--encoder <name>             指定 FFmpeg 编码器，例如 libx264
+--format <name>              指定输出封装格式，例如 rtsp 或 flv
+--pull-rtsp-transport <v>    拉流 RTSP transport，默认 tcp
+--push-rtsp-transport <v>    推流 RTSP transport，默认 tcp
+--connect-timeout-ms <n>     拉流连接超时
+--read-timeout-ms <n>        拉流读取超时
+--no-low-latency             禁用拉流低延迟参数
+```
+
+示例：
+
+```powershell
+src-cpp\build\bin\media_runtime_transcode_demo.exe `
+  --input rtsp://127.0.0.1/live/in `
+  --output rtsp://127.0.0.1/live/out `
+  --seconds 60 `
+  --codec h264 `
+  --bitrate 2000000 `
+  --encoder libx264
+```
+
+如果输出地址无法由 FFmpeg 自动推断封装格式，可以显式指定：
+
+```powershell
+src-cpp\build\bin\media_runtime_transcode_demo.exe `
+  --input rtsp://127.0.0.1/live/in `
+  --output rtmp://127.0.0.1/live/out `
+  --format flv
+```
+
+### CMake Target
+
+demo 位于 `src-cpp/modules/media/demo`，由 `BUILD_MEDIA_DEMOS` 控制：
+
+```cmake
+option(BUILD_MEDIA_DEMOS "Build media demo executables" ON)
+```
+
+目标名：
+
+```cmake
+media_runtime_transcode_demo
+```
+
+它链接以下模块：
+
+```cmake
+target_link_libraries(media_runtime_transcode_demo PRIVATE
+    media_runtime
+    media_puller_lib
+    media_decoder_lib
+    media_encoder_lib
+    media_pusher_lib
+    media_defines_lib
+    common_lib
+    Boost::asio
+)
+```
+
+构建：
+
+```powershell
+cmake --build src-cpp/build --target media_runtime_transcode_demo
+```
+
+### 这个 demo 展示了什么
+
+这个 demo 的价值不只是“转推”，而是展示了 Runtime 在媒体流水线里的几个关键用法：
+
+- 如何把阻塞式外部组件包装成 `SourceNode` / `TransformNode` / `SinkNode`。
+- 如何使用 `Graph::Connect<T>()` 做强类型节点连接。
+- 如何用 `QueueTransport` 跨线程传递媒体包和视频帧。
+- 如何把运行时探测到的流参数通过共享状态传递给后续节点。
+- 如何让资源初始化从 `Init()` 延迟到首次 `Process()`，解决媒体参数依赖问题。
+- 如何通过背压策略降低实时流延迟。
+- 如何在主线程里统一控制 Runtime 生命周期。
+
+生产环境中可以在这个 demo 基础上继续扩展：
+
+- 增加自动重连和断流恢复。
+- 在解码和编码之间插入缩放、像素格式转换、OSD、AI 推理等节点。
+- 从编码器导出最新 extradata，用于更严谨的推流头信息。
+- 增加关键帧优先策略，队列满时优先保留 IDR/关键帧。
+- 将统计数据接入监控系统，暴露 FPS、延迟、水位、丢帧等指标。
+
+---
+
 ## 目录结构
 
 ```

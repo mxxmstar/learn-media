@@ -1,22 +1,17 @@
 #pragma once
 
-/// @file mailbox.h
-/// @brief Mailbox 聚合头文件
-///
-/// 包含 Mailbox 体系的所有组件：
-/// - i_mailbox.h：枚举定义 + IMailBox 抽象接口
-/// - spsc_mailbox.h：SPSCMailBox 实现（默认，无锁高性能）
-/// - mpmc_mailbox.h：MPMCMailBox 实现（互斥锁保护）
-///
-/// 提供 CreateMailBox 工厂函数，根据 MailBoxKind 创建对应实例。
-///
-/// 使用方式：
-/// @code
-/// auto mb = CreateMailBox<int>(MailBoxKind::SPSC, 64);
-/// mb->Push(42, BackpressurePolicy::DropOldest);
-/// int val;
-/// mb->TryPop(val);
-/// @endcode
+/**
+ * @file mailbox.h
+ * @brief Mailbox 聚合头文件及工厂函数
+ *
+ * 包含 Mailbox 体系的所有组件，并提供 CreateMailBox 工厂函数。
+ *
+ * IMailBox<T> 是框架中"数据通道"的底层存储单元，
+ * 由 QueueTransport 内部持有。CreateMailBox 简化了 SPSC/MPMC
+ * 的选择：
+ *
+ *   auto mb = CreateMailBox<MediaFrame>(MailBoxKind::SPSC, 64);
+ */
 
 #include "transport/i_mailbox.h"
 #include "transport/spsc_mailbox.h"
@@ -26,11 +21,13 @@
 
 namespace runtime {
 
-/// @brief 创建 Mailbox 实例的工厂函数
-/// @tparam T 元素类型
-/// @param kind Mailbox 类型（SPSC 或 MPMC）
-/// @param capacity 容量（0 表示无界）
-/// @return Mailbox 实例的唯一指针
+/**
+ * @brief 创建 Mailbox 实例的工厂函数
+ * @tparam T 元素类型
+ * @param kind Mailbox 类型：SPSC（默认，无锁高性能）或 MPMC（多生产者安全）
+ * @param capacity 容量（0 表示无界，仅 MPMC 模式下有意义）
+ * @return Mailbox 实例的唯一指针
+ */
 template <typename T>
 std::unique_ptr<IMailBox<T>> CreateMailBox(MailBoxKind kind, std::size_t capacity) {
     if (kind == MailBoxKind::MPMC) {
@@ -40,4 +37,4 @@ std::unique_ptr<IMailBox<T>> CreateMailBox(MailBoxKind kind, std::size_t capacit
     return std::make_unique<SPSCMailBox<T>>(capacity);
 }
 
-} // namespace runtime
+}
