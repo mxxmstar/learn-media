@@ -28,18 +28,150 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "executor/i_executor.h"
+#include "port/input_port.h"
+#include "port/output_port.h"
 
 namespace runtime {
 
 class INode;
+
+inline constexpr const char* kDefaultInputPortName = "in";
+inline constexpr const char* kDefaultOutputPortName = "out";
+
+struct PortRecord {
+    std::type_index type{typeid(void)};
+    std::any port;
+};
+
+struct PortSpec {
+    enum class Direction {
+        Input,
+        Output
+    };
+
+    Direction direction{Direction::Input};
+    std::string name;
+    std::type_index type{typeid(void)};
+    std::any port;
+
+    template<typename T>
+    static PortSpec Input(std::string name, InputPort<T>& port) {
+        return PortSpec{
+            Direction::Input,
+            std::move(name),
+            std::type_index(typeid(T)),
+            &port
+        };
+    }
+
+    template<typename T>
+    static PortSpec Output(std::string name, OutputPort<T>& port) {
+        return PortSpec{
+            Direction::Output,
+            std::move(name),
+            std::type_index(typeid(T)),
+            &port
+        };
+    }
+};
+
+class PortRegistry {
+public:
+    PortRegistry(std::unordered_map<std::string, PortRecord>& named_inputs,
+                 std::unordered_map<std::string, PortRecord>& named_outputs,
+                 std::unordered_map<std::type_index, std::any>& typed_inputs,
+                 std::unordered_map<std::type_index, std::any>& typed_outputs)
+        : named_inputs_(named_inputs),
+          named_outputs_(named_outputs),
+          typed_inputs_(typed_inputs),
+          typed_outputs_(typed_outputs) {}
+
+    template<typename T>
+    bool Input(std::string name, InputPort<T>& port) {
+        return Register(PortSpec::Input(std::move(name), port));
+    }
+
+    template<typename T>
+    bool Output(std::string name, OutputPort<T>& port) {
+        return Register(PortSpec::Output(std::move(name), port));
+    }
+
+    bool Register(const PortSpec& spec) {
+        if (spec.name.empty()) {
+            SetError("port name is empty");
+            return false;
+        }
+        if (!spec.port.has_value()) {
+            SetError("port is empty: " + spec.name);
+            return false;
+        }
+
+        if (spec.direction == PortSpec::Direction::Input) {
+            if (named_inputs_.find(spec.name) != named_inputs_.end()) {
+                SetError("duplicate input port: " + spec.name);
+                return false;
+            }
+            named_inputs_.emplace(spec.name, PortRecord{spec.type, spec.port});
+            typed_inputs_.try_emplace(spec.type, spec.port);
+            return true;
+        }
+
+        if (named_outputs_.find(spec.name) != named_outputs_.end()) {
+            SetError("duplicate output port: " + spec.name);
+            return false;
+        }
+        named_outputs_.emplace(spec.name, PortRecord{spec.type, spec.port});
+        typed_outputs_.try_emplace(spec.type, spec.port);
+        return true;
+    }
+
+    bool Register(std::initializer_list<PortSpec> specs) {
+        bool ok = true;
+        for (const auto& spec : specs) {
+            ok = Register(spec) && ok;
+        }
+        return ok;
+    }
+
+    bool Register(const std::vector<PortSpec>& specs) {
+        bool ok = true;
+        for (const auto& spec : specs) {
+            ok = Register(spec) && ok;
+        }
+        return ok;
+    }
+
+    bool HasError() const {
+        return !error_.empty();
+    }
+
+    const std::string& Error() const {
+        return error_;
+    }
+
+private:
+    void SetError(std::string error) {
+        if (error_.empty()) {
+            error_ = std::move(error);
+        }
+    }
+
+    std::unordered_map<std::string, PortRecord>& named_inputs_;
+    std::unordered_map<std::string, PortRecord>& named_outputs_;
+    std::unordered_map<std::type_index, std::any>& typed_inputs_;
+    std::unordered_map<std::type_index, std::any>& typed_outputs_;
+    std::string error_;
+};
 
 /**
  * @brief 节点度量快照（非原子读取，用于监控展示）
@@ -118,6 +250,12 @@ struct NodeContext {
 
     /// @brief 按类型存储的输出端口指针（Graph::AddNode 时自动注册）
     std::unordered_map<std::type_index, std::any> output_ports;
+
+    /// @brief 按端口名存储的输入端口指针（支持同类型多端口）
+    std::unordered_map<std::string, PortRecord> named_input_ports;
+
+    /// @brief 按端口名存储的输出端口指针（支持同类型多端口）
+    std::unordered_map<std::string, PortRecord> named_output_ports;
 
     /**
      * @brief 分发一个任务给此节点执行

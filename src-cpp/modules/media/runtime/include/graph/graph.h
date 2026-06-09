@@ -42,6 +42,7 @@
  */
 
 #include <any>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -86,6 +87,15 @@ struct HasOutputMethod : std::false_type {};
 template<typename T>
 struct HasOutputMethod<T, std::void_t<decltype(std::declval<T>().Output())>> : std::true_type {};
 
+template<typename T, typename = void>
+struct HasRegisterPortsMethod : std::false_type {};
+
+template<typename T>
+struct HasRegisterPortsMethod<
+    T,
+    std::void_t<decltype(std::declval<T>().RegisterPorts(std::declval<PortRegistry&>()))>>
+    : std::true_type {};
+
 }
 
 /**
@@ -97,6 +107,16 @@ struct HasOutputMethod<T, std::void_t<decltype(std::declval<T>().Output())>> : s
 enum class TransportType {
     Queue,
     Direct
+};
+
+struct PortConnection {
+    std::string src;
+    std::string src_port;
+    std::string dst;
+    std::string dst_port;
+    TransportType type{TransportType::Queue};
+    std::size_t capacity{64};
+    BackpressurePolicy policy{BackpressurePolicy::DropOldest};
 };
 
 class Graph {
@@ -157,16 +177,39 @@ public:
         // 使用 decltype 推导 port 的实际模板类型 T，
         // 这样 Connect<T> 时可以通过 type_index 匹配
 
+        PortRegistry registry(ctx->named_input_ports,
+                              ctx->named_output_ports,
+                              ctx->input_ports,
+                              ctx->output_ports);
+
         if constexpr (detail::HasInputMethod<T>::value) {
             auto& input = node->Input();
             using InType = typename std::decay_t<decltype(input)>::Type;
-            ctx->input_ports[std::type_index(typeid(InType))] = &input;
+            if (!registry.Input<InType>(kDefaultInputPortName, input)) {
+                return {};
+            }
         }
 
         if constexpr (detail::HasOutputMethod<T>::value) {
             auto& output = node->Output();
             using OutType = typename std::decay_t<decltype(output)>::Type;
-            ctx->output_ports[std::type_index(typeid(OutType))] = &output;
+            if (!registry.Output<OutType>(kDefaultOutputPortName, output)) {
+                return {};
+            }
+        }
+
+        if constexpr (detail::HasRegisterPortsMethod<T>::value) {
+            using ReturnType = decltype(node->RegisterPorts(registry));
+            if constexpr (std::is_same_v<ReturnType, bool>) {
+                if (!node->RegisterPorts(registry)) {
+                    return {};
+                }
+            } else {
+                node->RegisterPorts(registry);
+            }
+            if (registry.HasError()) {
+                return {};
+            }
         }
 
         auto [_, inserted] = nodes_.emplace(id, std::move(ctx));
@@ -225,84 +268,84 @@ public:
             return false;
         }
 
-        // 创建 EdgeContext
-        auto edge = std::make_shared<EdgeContext<T>>();
-        edge->edge_id = src + "->" + dst;
-        edge->src_id = src;
-        edge->dst_ = &dst_ctx;
-        edge->dst_metrics_ = dst_ctx.metrics;
-        edge->scheduler_ = scheduler_;
+        return ConnectResolved<T>(src, kDefaultOutputPortName,
+                                  dst, kDefaultInputPortName,
+                                  dst_ctx, output, input,
+                                  type, capacity, policy);
+    }
 
-        // 创建 Transport
-        if (type == TransportType::Direct) {
-            edge->transport = std::make_shared<DirectTransport<T>>();
-        } else {
-            edge->transport = std::make_shared<QueueTransport<T>>(capacity, policy);
+    /**
+     * @brief 连接两个命名端口
+     *
+     * 支持一个节点注册多个输入/输出端口。端口名与类型都必须匹配：
+     *   graph.Connect<Frame>("preprocess", "frame", "yolo", "frame");
+     *   graph.Connect<Result>("yolo", "result", "post", "yolo_result");
+     */
+    template<typename T>
+    bool Connect(const std::string& src, const std::string& src_port,
+                 const std::string& dst, const std::string& dst_port,
+                 TransportType type = TransportType::Queue,
+                 std::size_t capacity = 64,
+                 BackpressurePolicy policy = BackpressurePolicy::DropOldest) {
+        auto src_it = nodes_.find(src);
+        auto dst_it = nodes_.find(dst);
+        if (src_it == nodes_.end() || dst_it == nodes_.end() || !scheduler_) {
+            return false;
         }
 
-        // —— 统计回调 ——
-        // 每次 Send 结果更新 dst 节点的 metrics
-        auto count_send_result = [metrics = dst_ctx.metrics](MailboxPushResult result) {
-            if (!metrics) {
-                return;
-            }
+        auto& src_ctx = *src_it->second;
+        auto& dst_ctx = *dst_it->second;
 
-            switch (result) {
-            case MailboxPushResult::Accepted:
-                metrics->enqueued.fetch_add(1);
-                break;
-            case MailboxPushResult::DroppedOldest:
-                metrics->enqueued.fetch_add(1);   // 数据最终入队了
-                metrics->dropped.fetch_add(1);     // 但一个旧数据被丢弃
-                break;
-            case MailboxPushResult::DroppedNewest:
-                metrics->dropped.fetch_add(1);     // 新数据被丢弃
-                break;
-            case MailboxPushResult::Closed:
-                metrics->rejected.fetch_add(1);    // 队列已关闭
-                break;
-            }
-        };
-
-        // QueueTransport 专属设置：通知回调 + 统计回调
-        if (auto queue_transport = std::dynamic_pointer_cast<QueueTransport<T>>(edge->transport)) {
-            queue_transport->SetSendResultCallback(count_send_result);
-            std::weak_ptr<IEdgeContext> weak_edge = edge;
-            queue_transport->SetNotifyCallback([weak_edge]() {
-                if (auto edge = weak_edge.lock()) {
-                    edge->TrySchedule();
-                }
-            });
+        auto out_it = src_ctx.named_output_ports.find(src_port);
+        auto in_it = dst_ctx.named_input_ports.find(dst_port);
+        if (out_it == src_ctx.named_output_ports.end() ||
+            in_it == dst_ctx.named_input_ports.end()) {
+            return false;
         }
 
-        // DirectTransport 专属设置：consumer（直接同步调用）
-        if (auto direct_transport = std::dynamic_pointer_cast<DirectTransport<T>>(edge->transport)) {
-            direct_transport->SetSendResultCallback(count_send_result);
-            direct_transport->SetConsumer([input, dst = &dst_ctx, metrics = dst_ctx.metrics](T msg) mutable {
-                dst->Dispatch([input, metrics, msg = std::move(msg)]() mutable {
-                        try {
-                            input->Receive(std::move(msg));
-                            if (metrics) {
-                                metrics->processed.fetch_add(1);
-                            }
-                        } catch (...) {
-                            if (metrics) {
-                                metrics->errors.fetch_add(1);
-                            }
-                        }
-                    });
-            });
+        const auto expected_type = std::type_index(typeid(T));
+        if (out_it->second.type != expected_type || in_it->second.type != expected_type) {
+            return false;
         }
 
-        // 设置 consumer_（Drain 端用于将数据传给 InputPort::Receive）
-        edge->consumer_ = [input](T msg) {
-            input->Receive(std::move(msg));
-        };
+        auto* output = std::any_cast<OutputPort<T>*>(out_it->second.port);
+        auto* input = std::any_cast<InputPort<T>*>(in_it->second.port);
+        if (!output || !input) {
+            return false;
+        }
 
-        // 将 Transport 注册到上游 OutputPort
-        output->AddTransport(edge->transport);
-        edges_.push_back(std::move(edge));
-        return true;
+        return ConnectResolved<T>(src, src_port, dst, dst_port, dst_ctx,
+                                  output, input, type, capacity, policy);
+    }
+
+    template<typename T>
+    bool Connect(std::initializer_list<PortConnection> connections) {
+        bool ok = true;
+        for (const auto& connection : connections) {
+            ok = Connect<T>(connection.src,
+                            connection.src_port,
+                            connection.dst,
+                            connection.dst_port,
+                            connection.type,
+                            connection.capacity,
+                            connection.policy) && ok;
+        }
+        return ok;
+    }
+
+    template<typename T>
+    bool Connect(const std::vector<PortConnection>& connections) {
+        bool ok = true;
+        for (const auto& connection : connections) {
+            ok = Connect<T>(connection.src,
+                            connection.src_port,
+                            connection.dst,
+                            connection.dst_port,
+                            connection.type,
+                            connection.capacity,
+                            connection.policy) && ok;
+        }
+        return ok;
     }
 
     /// @brief 设置调度器
@@ -425,6 +468,90 @@ public:
     }
 
 private:
+    template<typename T>
+    bool ConnectResolved(const std::string& src,
+                         const std::string& src_port,
+                         const std::string& dst,
+                         const std::string& dst_port,
+                         NodeContext& dst_ctx,
+                         OutputPort<T>* output,
+                         InputPort<T>* input,
+                         TransportType type,
+                         std::size_t capacity,
+                         BackpressurePolicy policy) {
+        auto edge = std::make_shared<EdgeContext<T>>();
+        edge->edge_id = src + ":" + src_port + "->" + dst + ":" + dst_port;
+        edge->src_id = src;
+        edge->dst_ = &dst_ctx;
+        edge->dst_metrics_ = dst_ctx.metrics;
+        edge->scheduler_ = scheduler_;
+
+        if (type == TransportType::Direct) {
+            edge->transport = std::make_shared<DirectTransport<T>>();
+        } else {
+            edge->transport = std::make_shared<QueueTransport<T>>(capacity, policy);
+        }
+
+        auto count_send_result = [metrics = dst_ctx.metrics](MailboxPushResult result) {
+            if (!metrics) {
+                return;
+            }
+
+            switch (result) {
+            case MailboxPushResult::Accepted:
+                metrics->enqueued.fetch_add(1);
+                break;
+            case MailboxPushResult::DroppedOldest:
+                metrics->enqueued.fetch_add(1);
+                metrics->dropped.fetch_add(1);
+                break;
+            case MailboxPushResult::DroppedNewest:
+                metrics->dropped.fetch_add(1);
+                break;
+            case MailboxPushResult::Closed:
+                metrics->rejected.fetch_add(1);
+                break;
+            }
+        };
+
+        if (auto queue_transport = std::dynamic_pointer_cast<QueueTransport<T>>(edge->transport)) {
+            queue_transport->SetSendResultCallback(count_send_result);
+            std::weak_ptr<IEdgeContext> weak_edge = edge;
+            queue_transport->SetNotifyCallback([weak_edge]() {
+                if (auto edge = weak_edge.lock()) {
+                    edge->TrySchedule();
+                }
+            });
+        }
+
+        if (auto direct_transport = std::dynamic_pointer_cast<DirectTransport<T>>(edge->transport)) {
+            direct_transport->SetSendResultCallback(count_send_result);
+            direct_transport->SetConsumer([input, dst = &dst_ctx, metrics = dst_ctx.metrics](T msg) mutable {
+                dst->Dispatch([input, metrics, msg = std::move(msg)]() mutable {
+                    try {
+                        input->Receive(std::move(msg));
+                        if (metrics) {
+                            metrics->processed.fetch_add(1);
+                        }
+                    } catch (...) {
+                        if (metrics) {
+                            metrics->errors.fetch_add(1);
+                        }
+                    }
+                });
+            });
+        }
+
+        edge->consumer_ = [input](T msg) {
+            input->Receive(std::move(msg));
+        };
+
+        input->Bind(edge->transport);
+        output->AddTransport(edge->transport);
+        edges_.push_back(std::move(edge));
+        return true;
+    }
+
     /// @brief 回滚已启动的 Executor（当 Start 过程失败时）
     void StopStartedExecutors(const std::unordered_set<IExecutor*>& started) {
         for (auto* executor : started) {

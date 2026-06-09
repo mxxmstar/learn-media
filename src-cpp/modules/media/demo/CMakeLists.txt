@@ -8,6 +8,10 @@ add_executable(media_runtime_transcode_demo
     runtime_transcode_demo.cpp
 )
 
+add_executable(media_runtime_multi_port_demo
+    runtime_multi_port_demo.cpp
+)
+
 target_include_directories(media_runtime_transcode_demo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../puller/include
@@ -29,6 +33,17 @@ target_link_libraries(media_runtime_transcode_demo PRIVATE
     Boost::asio
 )
 
+target_include_directories(media_runtime_multi_port_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include
+)
+
+target_link_libraries(media_runtime_multi_port_demo PRIVATE
+    media_runtime
+    common_lib
+    Boost::asio
+)
+
 if(MSVC)
     target_compile_options(media_runtime_transcode_demo PRIVATE /utf-8)
+    target_compile_options(media_runtime_multi_port_demo PRIVATE /utf-8)
 endif()

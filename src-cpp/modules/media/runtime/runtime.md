@@ -105,6 +105,73 @@ class OutputPort {
 };
 ```
 
+#### 默认端口与命名端口
+
+简单节点仍然可以继承 `SourceNode<Out>` / `TransformNode<In, Out>` / `SinkNode<In>`。
+这类 mixin 会自动注册默认端口：
+
+- 输入端口：`"in"`
+- 输出端口：`"out"`
+
+因此旧 API 仍然可用：
+
+```cpp
+graph.Connect<MediaPacket>("source", "decoder");
+graph.Connect<MediaFrame>("decoder", "infer");
+```
+
+对于 YOLO、后处理、融合节点这类需要多输入/多输出的节点，可以直接持有多个
+`InputPort<T>` / `OutputPort<T>`，并通过 `RegisterPorts()` 注册命名端口：
+
+```cpp
+class PostProcessNode : public INode {
+public:
+    PostProcessNode() {
+        frame_in_.SetHandler([this](FrameMessage frame) {
+            OnFrame(std::move(frame));
+        });
+        yolo_in_.SetHandler([this](YoloResult result) {
+            OnYoloResult(std::move(result));
+        });
+    }
+
+    bool RegisterPorts(runtime::PortRegistry& registry) {
+        return registry.Register({
+            runtime::PortSpec::Input<FrameMessage>("frame", frame_in_),
+            runtime::PortSpec::Input<YoloResult>("yolo_result", yolo_in_),
+            runtime::PortSpec::Output<FrameMessage>("processed_frame", frame_out_),
+        });
+    }
+
+private:
+    InputPort<FrameMessage> frame_in_;
+    InputPort<YoloResult> yolo_in_;
+    OutputPort<FrameMessage> frame_out_;
+};
+```
+
+也可以继续使用 `registry.Input<T>()` / `registry.Output<T>()` 逐个注册；
+数组形式只是让三个以上端口的节点更清晰。
+
+连接命名端口时同时指定节点 ID 和端口名。批量连接按消息类型分组：
+
+```cpp
+graph.Connect<FrameMessage>({
+    runtime::PortConnection{"preprocess", "frame", "yolo", "frame"},
+    runtime::PortConnection{"preprocess", "frame", "post", "frame"},
+    runtime::PortConnection{"post", "processed_frame", "encoder", "in"},
+});
+
+graph.Connect<YoloResult>({
+    runtime::PortConnection{"yolo", "result", "post", "yolo_result"},
+});
+```
+
+命名端口解决了两个限制：
+
+- 一个节点可以有多个不同类型的输入/输出。
+- 一个节点可以有多个相同类型的输入/输出，例如 `raw_frame` 和 `processed_frame` 都是 `FrameMessage`。
+
 ---
 
 ### Layer 2: Transport — 传输通道
@@ -657,6 +724,37 @@ TEST(DecoderTest, Basic) {
 }
 ```
 
+### 4. 多输入 / 多输出节点
+
+当节点需要多个端口时，不继承 `TransformNode<In, Out>` 也可以，直接继承 `INode`
+并手动注册端口即可。下面是 YOLO + 后处理的典型拓扑：
+
+```plaintext
+PreprocessNode
+  ├── frame ───────────────► YoloNode
+  │                           └── result ─────┐
+  └── frame ──────────────────────────────────► PostProcessNode
+                                                  └── processed_frame ─► Encoder
+```
+
+示例连接：
+
+```cpp
+g.Connect<FrameMessage>({
+    runtime::PortConnection{"preprocess", "frame", "yolo", "frame"},
+    runtime::PortConnection{"preprocess", "frame", "post", "frame"},
+    runtime::PortConnection{"post", "processed_frame", "encoder", "in"},
+});
+
+g.Connect<YoloResult>({
+    runtime::PortConnection{"yolo", "result", "post", "yolo_result"},
+});
+```
+
+`runtime_multi_port_demo.cpp` 提供了一个最小可运行示例：一个 source 同时输出
+`number`、`text`、`flag` 三个端口，join 节点通过三个输入端口接收并输出
+`joined`、`length`、`accepted` 三个端口。
+
 ---
 
 ## 管线示例
@@ -1095,7 +1193,7 @@ runtime/include/
 
 ```plaintext
 同一个 node 如果有多条输入 edge，仍可能被多个 edge 并发调用，需要 node 级 strand/serialized executor。 √
-port 只按 type_index 匹配，同类型多输入/多输出不好表达，需要命名端口。
+命名多端口已经支持；多输入节点仍需要在业务层做消息 join，例如按 stream_id + seq 对齐 frame/result。
 多下游 fan-out 对大帧/move-only 对象仍不理想，视频帧建议统一 shared_ptr 或引入 clone/zero-copy fanout 策略。
 背压只是单 edge 局部策略，还缺全链路水位、限流、关键帧优先、丢非关键帧策略。
 缺少 per-stream 顺序、时间戳 watermark、同步节点聚合策略。
