@@ -55,6 +55,7 @@ endif()
 
 # ==================== Module libraries ====================
 add_subdirectory(modules/common)
+add_subdirectory(modules/grpc)
 add_subdirectory(modules/media)
 
 # ==================== Standalone executable ====================

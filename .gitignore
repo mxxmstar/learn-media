@@ -28,6 +28,11 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+src-cpp/modules/grpc/generated/
+src-py/generated/
+src-py/grpc/generated/
+src-py/received_frames/
+src-py/grpc/received_frames/
 
 
 src-cpp/modules/*/test/bin/

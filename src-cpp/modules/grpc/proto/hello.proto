@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package simple_grpc;
+
+// Hello 服务 —— 简单的问候演示
+service HelloService {
+  // 一元 RPC：发送名字，返回问候消息
+  rpc SayHello(HelloRequest) returns (HelloResponse);
+  // 服务端流式 RPC：发送名字，返回多条问候消息流
+  rpc SayHelloStream(HelloRequest) returns (stream HelloResponse);
+}
+
+// Hello 请求：包含名字和重复次数
+message HelloRequest {
+  string name = 1;   // 问候对象名称
+  int32 count = 2;   // 流式响应时的消息条数
+}
+
+// Hello 响应：包含问候消息和时间戳
+message HelloResponse {
+  string message = 1;  // 问候消息内容
+  int64 timestamp = 2; // 响应生成时间戳（毫秒）
+}
