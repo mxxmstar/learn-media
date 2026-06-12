@@ -57,6 +57,7 @@ endif()
 add_subdirectory(modules/common)
 add_subdirectory(modules/grpc)
 add_subdirectory(modules/media)
+add_subdirectory(modules/inference)
 
 # ==================== Standalone executable ====================
 if(BUILD_STANDALONE)
