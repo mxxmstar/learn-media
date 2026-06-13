@@ -4,7 +4,8 @@
 #include <vector>
 
 struct LetterBoxInfo {
-    float scale;
-    float pad_x;
-    float pad_y;
+    float scale_x{1.0f};
+    float scale_y{1.0f};
+    float pad_x{0.0f};
+    float pad_y{0.0f};
 };

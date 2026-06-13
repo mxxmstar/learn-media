@@ -14,6 +14,7 @@ public:
     TensorFrame() = default;
 
     TensorFrame(const TensorFrame& other) {
+        tensor_meta_ = other.tensor_meta_;
         for (const auto& [name, tensor] : other.tensors_) {
             if (tensor) {
                 tensors_.emplace(name, std::make_unique<TensorPlane>(*tensor));
@@ -27,6 +28,7 @@ public:
         }
 
         tensors_.clear();
+        tensor_meta_ = other.tensor_meta_;
         for (const auto& [name, tensor] : other.tensors_) {
             if (tensor) {
                 tensors_.emplace(name, std::make_unique<TensorPlane>(*tensor));
@@ -89,5 +91,5 @@ public:
     /// @brief 张量包中的张量数据
     std::unordered_map<std::string, std::unique_ptr<TensorPlane>> tensors_;
     
-    TensorMeta tensor_meta_;    ///< 预处理信息
+    TensorMeta tensor_meta_;    ///< 转换相关的信息
 };

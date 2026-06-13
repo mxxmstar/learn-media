@@ -19,6 +19,12 @@ public:
     std::shared_ptr<ov::InferRequest> Acquire();
     /// @brief 释放推理请求
     void Release(std::shared_ptr<ov::InferRequest> request);
+    /// @brief 停止接收新的推理请求并唤醒等待线程
+    void Shutdown();
+
+    /// @brief 等待所有异步推理请求完成
+    bool WaitAll();
+    
     /// @brief 获取空闲推理请求数量
     size_t IdleCount() const;
     /// @brief 获取总推理请求数量
@@ -33,4 +39,6 @@ private:
     std::condition_variable cv_;
     /// @brief 总推理请求数量
     size_t total_count_{0};
+    /// @brief 是否已经关闭请求池
+    bool shutdown_{false};
 };

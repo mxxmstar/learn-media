@@ -158,9 +158,13 @@ private:
     }
 };
 
+/// @brief TensorFrame携带的转换相关的信息
 struct TensorMeta {
-    int src_width;
-    int src_height;
+    int src_width{0}; ///< 图片原始宽度
+    int src_height{0};  ///< 图片原始高度
 
-    LetterBoxInfo letterbox;
+    int input_width{0}; ///<模型输入宽度
+    int input_height{0}; ///<模型输入高度
+
+    LetterBoxInfo letterbox;    ///<转换信息
 };

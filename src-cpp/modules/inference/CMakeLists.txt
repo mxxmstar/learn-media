@@ -37,6 +37,7 @@ file(GLOB_RECURSE INFERENCE_SOURCES CONFIGURE_DEPENDS
     "inferenceengine/src/*.cpp"
     "inferencesession/src/*.cpp"
     "preprocessor/src/*.cpp"
+    "postprocessor/src/*.cpp"
 )
 
 add_library(inference_lib STATIC ${INFERENCE_SOURCES})
@@ -47,6 +48,7 @@ target_include_directories(inference_lib
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferenceinfo/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/model/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/preprocessor/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/postprocessor/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferenceengine/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferencesession/include>
         $<INSTALL_INTERFACE:include>

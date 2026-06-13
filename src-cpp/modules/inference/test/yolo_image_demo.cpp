@@ -186,10 +186,6 @@ int main(int argc, char** argv) {
 
     ModelConfig model_config;
     model_config.name = "yolo";
-    model_config.path = options.model_path;
-    model_config.backend = "OPENVINO";
-    model_config.device = "CPU";
-    model_config.request_count = 1;
 
     auto model = std::make_shared<YoloModel>();
     if (!model->Initialize(model_config)) {
@@ -204,9 +200,15 @@ int main(int argc, char** argv) {
     preprocess_config.model_pixel_format = PixelFormat::kRGB24;
     preprocess_config.model_input_layout = "NCHW";
     preprocess_config.scale = 255.0f;
-    engine->SetPreprocessConfig(preprocess_config);
 
-    if (!engine->LoadModel(model_config)) {
+    EngineLoadConfig load_config;
+    load_config.engine.model_path = options.model_path;
+    load_config.engine.backend = "OPENVINO";
+    load_config.engine.device = "CPU";
+    load_config.engine.request_count = 1;
+    load_config.preprocess = preprocess_config;
+
+    if (!engine->LoadModel(load_config)) {
         std::cerr << "Failed to load model: " << options.model_path << "\n";
         return 4;
     }

@@ -264,6 +264,34 @@ TensorDesc BuildTensorDesc(const ov::Output<const ov::Node>& port,
     return desc;
 }
 
+TensorModelDesc BuildModelDesc(const ov::CompiledModel& model) {
+    TensorModelDesc desc;
+
+    const auto inputs = model.inputs();
+    desc.inputs.reserve(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        desc.inputs.push_back(BuildTensorDesc(inputs[i], i, true));
+    }
+
+    const auto outputs = model.outputs();
+    desc.outputs.reserve(outputs.size());
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        desc.outputs.push_back(BuildTensorDesc(outputs[i], i, false));
+    }
+
+    return desc;
+}
+
+bool HasDynamicShape(const TensorModelDesc& desc) {
+    const auto has_dynamic = [](const std::vector<TensorDesc>& tensors) {
+        return std::any_of(tensors.begin(), tensors.end(), [](const TensorDesc& tensor) {
+            return tensor.dynamic_shape;
+        });
+    };
+
+    return has_dynamic(desc.inputs) || has_dynamic(desc.outputs);
+}
+
 const TensorPlane* FindInputTensor(const TensorFrame& frame,
                                   const ov::Output<const ov::Node>& port,
                                   size_t index,
@@ -369,8 +397,8 @@ TensorFrame CollectOutputs(ov::InferRequest& request,
 
 class RequestLease {
 public:
-    RequestLease(OpenVinoInferRequestPool* pool, std::shared_ptr<ov::InferRequest> request)
-        : pool_(pool),
+    RequestLease(std::shared_ptr<OpenVinoInferRequestPool> pool, std::shared_ptr<ov::InferRequest> request)
+        : pool_(std::move(pool)),
           request_(std::move(request)) {
     }
 
@@ -378,6 +406,10 @@ public:
         if (pool_ && request_) {
             pool_->Release(std::move(request_));
         }
+    }
+
+    bool Valid() const {
+        return request_ != nullptr;
     }
 
     ov::InferRequest& operator*() {
@@ -389,30 +421,31 @@ public:
     }
 
 private:
-    OpenVinoInferRequestPool* pool_{nullptr};
+    std::shared_ptr<OpenVinoInferRequestPool> pool_;
     std::shared_ptr<ov::InferRequest> request_;
 };
 
 }  // namespace
 
 OpenVinoCpuEngine::OpenVinoCpuEngine()
-    : request_pool_(std::make_unique<OpenVinoInferRequestPool>()) {
+    : request_pool_(std::make_shared<OpenVinoInferRequestPool>()) {
 }
 
 OpenVinoCpuEngine::~OpenVinoCpuEngine() {
     Release();
 }
 
-bool OpenVinoCpuEngine::LoadModel(const ModelConfig& config) {
+bool OpenVinoCpuEngine::LoadModel(const EngineLoadConfig& load_config) {
     Release();
 
-    if (config.path.empty()) {
+    const auto& config = load_config.engine;
+    if (config.model_path.empty()) {
         LOG_MAIN_ERROR_AT("OpenVINO model path is empty");
         return false;
     }
 
-    if (!std::filesystem::exists(config.path)) {
-        LOG_MAIN_ERROR_AT("OpenVINO model path does not exist: {}", config.path);
+    if (!std::filesystem::exists(config.model_path)) {
+        LOG_MAIN_ERROR_AT("OpenVINO model path does not exist: {}", config.model_path);
         return false;
     }
 
@@ -420,58 +453,65 @@ bool OpenVinoCpuEngine::LoadModel(const ModelConfig& config) {
         config_ = config;
         config_.backend = "OPENVINO";
         config_.device = kCpuDevice;
+        config_.batch_size = std::max(1, config.batch_size);
         config_.request_count = std::max<uint32_t>(1, config.request_count);
-
-        auto raw_model = core_.read_model(config_.path);
-        model_input_shape_.clear();
-        if (!raw_model->inputs().empty()) {
-            model_input_shape_ = StaticShapeFromPartialShape(raw_model->input().get_partial_shape());
+        config_.support_async = true;
+        config_.max_batch_size = static_cast<uint32_t>(std::max(1, config_.batch_size));
+        if (load_config.preprocess.has_value()) {
+            preprocess_config_ = *load_config.preprocess;
+        } else {
+            preprocess_config_ = {};
         }
 
+        auto raw_model = core_.read_model(config_.model_path);
         auto model = ApplyOpenVinoPreprocess(std::move(raw_model), preprocess_config_);
         compiled_model_ = core_.compile_model(model, kCpuDevice);
-        if (model_input_shape_.empty() && !compiled_model_.inputs().empty()) {
-            model_input_shape_ = StaticShapeFromPartialShape(compiled_model_.input().get_partial_shape());
-        }
+        tensor_model_desc_ = BuildModelDesc(compiled_model_);
+        config_.support_dynamic_shape = HasDynamicShape(tensor_model_desc_);
 
-        request_pool_ = std::make_unique<OpenVinoInferRequestPool>();
+        request_pool_ = std::make_shared<OpenVinoInferRequestPool>();
         if (!request_pool_->Initialize(compiled_model_, config_.request_count)) {
+            request_pool_.reset();
             compiled_model_ = {};
-            model_input_shape_.clear();
+            tensor_model_desc_ = {};
             return false;
         }
 
         initialized_ = true;
         accepting_async_.store(true, std::memory_order_release);
-        LOG_MAIN_INFO_AT("Loaded OpenVINO CPU model: {}", config_.path);
+        LOG_MAIN_INFO_AT("Loaded OpenVINO CPU model: {}", config_.model_path);
         return true;
     } catch (const std::exception& e) {
         initialized_ = false;
         accepting_async_.store(false, std::memory_order_release);
+        request_pool_.reset();
         compiled_model_ = {};
-        model_input_shape_.clear();
-        LOG_MAIN_ERROR_AT("Failed to load OpenVINO CPU model {}: {}", config.path, e.what());
+        tensor_model_desc_ = {};
+        LOG_MAIN_ERROR_AT("Failed to load OpenVINO CPU model {}: {}", config.model_path, e.what());
         return false;
     }
 }
 
-void OpenVinoCpuEngine::SetPreprocessConfig(const OpenVinoPreprocessConfig& config) {
-    preprocess_config_ = config;
-}
-
 bool OpenVinoCpuEngine::Infer(const TensorFrame& input, TensorFrame& output) {
-    if (!initialized_ || !request_pool_) {
+    auto pool = request_pool_;
+    auto model = compiled_model_;
+    if (!initialized_ || !pool) {
         LOG_MAIN_ERROR_AT("OpenVINO CPU engine is not initialized");
         return false;
     }
 
-    auto request = request_pool_->Acquire();
-    RequestLease lease(request_pool_.get(), std::move(request));
+    auto request = pool->Acquire();
+    RequestLease lease(pool, std::move(request));
+    if (!lease.Valid()) {
+        LOG_MAIN_ERROR_AT("Failed to acquire OpenVINO CPU infer request");
+        return false;
+    }
 
     try {
-        BindInputs(*lease, compiled_model_, input);
+        BindInputs(*lease, model, input);
         lease->infer();
-        output = CollectOutputs(*lease, compiled_model_);
+        output = CollectOutputs(*lease, model);
+        output.tensor_meta_ = input.tensor_meta_;
         return true;
     } catch (const std::exception& e) {
         LOG_MAIN_ERROR_AT("OpenVINO CPU inference failed: {}", e.what());
@@ -482,7 +522,9 @@ bool OpenVinoCpuEngine::Infer(const TensorFrame& input, TensorFrame& output) {
 bool OpenVinoCpuEngine::InferAsync(const InferContext& ctx,
                                    const TensorFrame& input,
                                    InferCallback cb) {
-    if (!initialized_ || !request_pool_) {
+    auto pool = request_pool_;
+    auto model = compiled_model_;
+    if (!initialized_ || !pool) {
         LOG_MAIN_ERROR_AT("OpenVINO CPU engine is not initialized");
         return false;
     }
@@ -492,126 +534,94 @@ bool OpenVinoCpuEngine::InferAsync(const InferContext& ctx,
     }
 
     auto input_copy = std::make_shared<TensorFrame>(input);
-    auto request = request_pool_->Acquire();
+    auto request = pool->Acquire();
+    if (!request) {
+        LOG_MAIN_ERROR_AT("Failed to acquire OpenVINO CPU async infer request");
+        return false;
+    }
+    std::weak_ptr<OpenVinoInferRequestPool> weak_pool = pool;
 
     try {
-        BindInputs(*request, compiled_model_, *input_copy);
+        BindInputs(*request, model, *input_copy);
         request->set_callback(
-            [this,
+            [weak_pool,
+             model,
              request,
              input_copy,
              ctx,
              cb = std::move(cb)](std::exception_ptr ex) mutable {
-                TensorFrame output;
+                InferOutput result;
 
                 try {
                     if (ex) {
                         std::rethrow_exception(ex);
                     }
-                    output = CollectOutputs(*request, compiled_model_);
+                    result.output = CollectOutputs(*request, model);
+                    result.output.tensor_meta_ = input_copy->tensor_meta_;
+                    result.success = true;
                 } catch (const std::exception& e) {
                     LOG_MAIN_ERROR_AT("OpenVINO CPU async inference failed: {}", e.what());
                 }
 
                 try {
                     if (cb) {
-                        cb(ctx, std::move(output));
+                        cb(ctx, std::move(result));
                     }
                 } catch (const std::exception& e) {
                     LOG_MAIN_ERROR_AT("OpenVINO CPU async callback failed: {}", e.what());
                 }
 
-                if (request_pool_) {
-                    request_pool_->Release(std::move(request));
+                if (auto pool = weak_pool.lock()) {
+                    pool->Release(std::move(request));
                 }
             });
         request->start_async();
         return true;
     } catch (const std::exception& e) {
         LOG_MAIN_ERROR_AT("Failed to start OpenVINO CPU async inference: {}", e.what());
-        request_pool_->Release(std::move(request));
+        pool->Release(std::move(request));
         return false;
     }
 }
 
-std::vector<std::size_t> OpenVinoCpuEngine::GetInputShape() const {
+void OpenVinoCpuEngine::Release() {
+    accepting_async_.store(false, std::memory_order_release);
+    initialized_ = false;
+
+    auto pool = std::move(request_pool_);
+    if (pool) {
+        pool->Shutdown();
+        pool->WaitAll();
+    }
+
+    compiled_model_ = {};
+    tensor_model_desc_ = {};
+}
+
+EngineCapability OpenVinoCpuEngine::Supports() const {
+    auto capability = EngineCapability::CPU;
+    if (config_.support_async) {
+        capability |= EngineCapability::ASYNC;
+    }
+    if (config_.support_dynamic_shape) {
+        capability |= EngineCapability::DYNAMIC;
+    }
+    if (config_.max_batch_size > 1) {
+        capability |= EngineCapability::BATCH;
+    }
+    return capability;
+}
+
+TensorModelDesc OpenVinoCpuEngine::GetModelDesc() const {
     if (!initialized_) {
         return {};
     }
-
-    return model_input_shape_;
+    return tensor_model_desc_;
 }
 
-void OpenVinoCpuEngine::Release() {
-    accepting_async_.store(false, std::memory_order_release);
-
-    if (initialized_) {
-        WaitAll();
-    }
-
-    request_pool_.reset();
-    compiled_model_ = {};
-    model_input_shape_.clear();
-    initialized_ = false;
-}
-
-bool OpenVinoCpuEngine::WaitAll() {
-    if (!request_pool_) {
-        return true;
-    }
-
-    while (request_pool_->IdleCount() < request_pool_->TotalCount()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-
-    return true;
-}
-
-std::vector<TensorDesc> OpenVinoCpuEngine::GetInputDesc() const {
-    std::vector<TensorDesc> descs;
-    if (!initialized_) {
-        return descs;
-    }
-
-    const auto inputs = compiled_model_.inputs();
-    descs.reserve(inputs.size());
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        descs.push_back(BuildTensorDesc(inputs[i], i, true));
-    }
-    return descs;
-}
-
-std::vector<TensorDesc> OpenVinoCpuEngine::GetOutputDesc() const {
-    std::vector<TensorDesc> descs;
-    if (!initialized_) {
-        return descs;
-    }
-
-    const auto outputs = compiled_model_.outputs();
-    descs.reserve(outputs.size());
-    for (size_t i = 0; i < outputs.size(); ++i) {
-        descs.push_back(BuildTensorDesc(outputs[i], i, false));
-    }
-    return descs;
-}
-
-EngineInfo OpenVinoCpuEngine::GetEngineInfo() const {
-    EngineInfo info;
+EngineConfig OpenVinoCpuEngine::GetEngineConfig() const {
+    EngineConfig info = config_;
     info.backend = "OPENVINO";
     info.device = kCpuDevice;
-    info.support_async = true;
-    info.max_batch_size = static_cast<uint32_t>(std::max(1, config_.batch_size));
-
-    for (const auto& desc : GetInputDesc()) {
-        if (desc.dynamic_shape) {
-            info.support_dynamic_shape = true;
-            break;
-        }
-    }
-
     return info;
-}
-
-TensorMemoryType OpenVinoCpuEngine::GetMemoryType() const {
-    return TensorMemoryType::OPENVINO_CPU;
 }

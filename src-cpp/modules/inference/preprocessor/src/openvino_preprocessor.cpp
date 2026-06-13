@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -152,6 +153,22 @@ bool ValidateFrame(const MediaFrame& frame) {
     return true;
 }
 
+TensorMeta BuildTensorMeta(const MediaFrame& frame, uint32_t input_width, uint32_t input_height) {
+    TensorMeta meta;
+    meta.src_width = frame.width;
+    meta.src_height = frame.height;
+    meta.input_width = static_cast<int>(input_width);
+    meta.input_height = static_cast<int>(input_height);
+
+    if (frame.width > 0 && frame.height > 0) {
+        meta.letterbox.scale_x = static_cast<float>(input_width) / static_cast<float>(frame.width);
+        meta.letterbox.scale_y = static_cast<float>(input_height) / static_cast<float>(frame.height);
+    }
+    meta.letterbox.pad_x = 0.0f;
+    meta.letterbox.pad_y = 0.0f;
+    return meta;
+}
+
 TensorFrame PackNv12(const MediaFrame& frame) {
     TensorFrame tensor_frame;
 
@@ -234,11 +251,14 @@ TensorFrame OpenVinoYoloPreprocessor::Process(const MediaFrame& frame) {
         LOG_MAIN_WARN_AT("MediaFrame pixel format does not match preprocessor config");
     }
 
+    TensorFrame tensor_frame;
     switch (frame.pixel_format) {
         case PixelFormat::kNV12:
-            return PackNv12(frame);
+            tensor_frame = PackNv12(frame);
+            break;
         case PixelFormat::kI420:
-            return PackI420(frame);
+            tensor_frame = PackI420(frame);
+            break;
         case PixelFormat::kNV21:
             LOG_MAIN_ERROR_AT("NV21 is not supported by OpenVINO color preprocess directly; use NV12 or I420");
             return {};
@@ -246,4 +266,7 @@ TensorFrame OpenVinoYoloPreprocessor::Process(const MediaFrame& frame) {
             LOG_MAIN_ERROR_AT("Unsupported OpenVINO YUV preprocess pixel format");
             return {};
     }
+
+    tensor_frame.tensor_meta_ = BuildTensorMeta(frame, input_width_, input_height_);
+    return tensor_frame;
 }
