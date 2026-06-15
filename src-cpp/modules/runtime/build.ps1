@@ -7,8 +7,8 @@ param(
     [switch]$InstallDeps
 )
 
-& (Join-Path $PSScriptRoot '..\..\..\script\build-module.ps1') `
-    -ModuleName 'media/runtime' `
+& (Join-Path $PSScriptRoot '..\..\script\build-module.ps1') `
+    -ModuleName 'runtime' `
     -SourceDir $PSScriptRoot `
     -Action $Action `
     -Config $Config `

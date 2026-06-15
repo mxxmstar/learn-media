@@ -31,8 +31,11 @@ option(BUILD_MEDIA_PUSHER_TESTS "Build media pusher tests" ON)
     add_subdirectory(../common common_build)
 endif()
 
+if(NOT TARGET runtime_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/CMakeLists.txt")
+    add_subdirectory(../runtime runtime_build)
+endif()
+
 set(MEDIA_SUBMODULES
-    runtime
     defines
     stream
     puller

@@ -1073,7 +1073,7 @@ media_runtime_transcode_demo
 
 ```cmake
 target_link_libraries(media_runtime_transcode_demo PRIVATE
-    media_runtime
+    runtime_lib
     media_puller_lib
     media_decoder_lib
     media_encoder_lib
@@ -1204,7 +1204,7 @@ Stop 目前偏“停止并关闭”，还没有可配置的 drain/flush/discard 
 ## 构建
 
 ```cmake
-target_link_libraries(your_target PRIVATE media_runtime)
+target_link_libraries(your_target PRIVATE runtime_lib)
 ```
 
 依赖：`common_lib`（无锁队列）、`Boost::asio`（线程池）。

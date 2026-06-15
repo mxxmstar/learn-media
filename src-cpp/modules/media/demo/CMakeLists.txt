@@ -13,7 +13,6 @@ add_executable(media_runtime_multi_port_demo
 )
 
 target_include_directories(media_runtime_transcode_demo PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../puller/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../decoder/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../encoder/include
@@ -23,7 +22,7 @@ target_include_directories(media_runtime_transcode_demo PRIVATE
 )
 
 target_link_libraries(media_runtime_transcode_demo PRIVATE
-    media_runtime
+    runtime_lib
     media_puller_lib
     media_decoder_lib
     media_encoder_lib
@@ -33,12 +32,8 @@ target_link_libraries(media_runtime_transcode_demo PRIVATE
     Boost::asio
 )
 
-target_include_directories(media_runtime_multi_port_demo PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include
-)
-
 target_link_libraries(media_runtime_multi_port_demo PRIVATE
-    media_runtime
+    runtime_lib
     common_lib
     Boost::asio
 )

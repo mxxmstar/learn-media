@@ -123,6 +123,64 @@ ov::preprocess::ColorFormat ToModelColorFormat(PixelFormat format) {
     }
 }
 
+bool IsStaticChannelDim(const ov::Dimension& dim) {
+    if (!dim.is_static()) {
+        return false;
+    }
+
+    const auto value = dim.get_length();
+    return value == 1 || value == 3 || value == 4;
+}
+
+std::string InferImageLayout(const ov::PartialShape& shape) {
+    if (shape.rank().is_dynamic()) {
+        return {};
+    }
+
+    const auto rank = shape.rank().get_length();
+    if (rank == 4) {
+        if (IsStaticChannelDim(shape[1])) {
+            return "NCHW";
+        }
+        if (IsStaticChannelDim(shape[3])) {
+            return "NHWC";
+        }
+    }
+
+    if (rank == 3) {
+        if (IsStaticChannelDim(shape[0])) {
+            return "CHW";
+        }
+        if (IsStaticChannelDim(shape[2])) {
+            return "HWC";
+        }
+    }
+
+    return {};
+}
+
+OpenVinoPreprocessConfig ResolveOpenVinoPreprocessConfig(const std::shared_ptr<ov::Model>& model,
+                                                         OpenVinoPreprocessConfig config) {
+    if (!config.enabled) {
+        return config;
+    }
+
+    if (model->inputs().size() != 1) {
+        throw std::runtime_error("OpenVINO internal image preprocessing requires a single model input");
+    }
+
+    if (config.model_input_layout.empty()) {
+        config.model_input_layout = InferImageLayout(model->input().get_partial_shape());
+        if (config.model_input_layout.empty()) {
+            LOG_MAIN_WARN_AT("Failed to infer model input layout from OpenVINO model shape");
+        } else {
+            LOG_MAIN_INFO_AT("Inferred OpenVINO model input layout: {}", config.model_input_layout);
+        }
+    }
+
+    return config;
+}
+
 std::shared_ptr<ov::Model> ApplyOpenVinoPreprocess(std::shared_ptr<ov::Model> model,
                                                    const OpenVinoPreprocessConfig& config) {
     if (!config.enabled) {
@@ -395,36 +453,6 @@ TensorFrame CollectOutputs(ov::InferRequest& request,
     return output;
 }
 
-class RequestLease {
-public:
-    RequestLease(std::shared_ptr<OpenVinoInferRequestPool> pool, std::shared_ptr<ov::InferRequest> request)
-        : pool_(std::move(pool)),
-          request_(std::move(request)) {
-    }
-
-    ~RequestLease() {
-        if (pool_ && request_) {
-            pool_->Release(std::move(request_));
-        }
-    }
-
-    bool Valid() const {
-        return request_ != nullptr;
-    }
-
-    ov::InferRequest& operator*() {
-        return *request_;
-    }
-
-    ov::InferRequest* operator->() {
-        return request_.get();
-    }
-
-private:
-    std::shared_ptr<OpenVinoInferRequestPool> pool_;
-    std::shared_ptr<ov::InferRequest> request_;
-};
-
 }  // namespace
 
 OpenVinoCpuEngine::OpenVinoCpuEngine()
@@ -457,13 +485,15 @@ bool OpenVinoCpuEngine::LoadModel(const EngineLoadConfig& load_config) {
         config_.request_count = std::max<uint32_t>(1, config.request_count);
         config_.support_async = true;
         config_.max_batch_size = static_cast<uint32_t>(std::max(1, config_.batch_size));
+        auto raw_model = core_.read_model(config_.model_path);
+
+        // 设置 openvino 预处理器
         if (load_config.preprocess.has_value()) {
-            preprocess_config_ = *load_config.preprocess;
+            preprocess_config_ = ResolveOpenVinoPreprocessConfig(raw_model, *load_config.preprocess);
         } else {
             preprocess_config_ = {};
         }
-
-        auto raw_model = core_.read_model(config_.model_path);
+        
         auto model = ApplyOpenVinoPreprocess(std::move(raw_model), preprocess_config_);
         compiled_model_ = core_.compile_model(model, kCpuDevice);
         tensor_model_desc_ = BuildModelDesc(compiled_model_);

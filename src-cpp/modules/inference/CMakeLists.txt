@@ -8,11 +8,17 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     option(BUILD_TESTS "Build tests" ON)
 
+    if(BUILD_TESTS)
+        enable_testing()
+    endif()
+
     find_package(fmt CONFIG REQUIRED)
     find_package(spdlog CONFIG REQUIRED)
     find_package(yaml-cpp CONFIG REQUIRED)
     find_package(Boost REQUIRED COMPONENTS json system filesystem process lockfree pool)
-    find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+    if(NOT TARGET openvino::runtime)
+        find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+    endif()
 
     if(WIN32)
         add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -22,6 +28,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         add_compile_options(/FS /Zm500 /utf-8)
     endif()
 
+    set(BUILD_COMMON_TESTS OFF)
     if(NOT TARGET common_lib)
         add_subdirectory(../common common_build)
     endif()
@@ -30,43 +37,41 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 endif()
 
-find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+if(NOT TARGET openvino::runtime)
+    find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+endif()
 
-file(GLOB_RECURSE INFERENCE_SOURCES CONFIGURE_DEPENDS
-    "model/src/*.cpp"
-    "inferenceengine/src/*.cpp"
-    "inferencesession/src/*.cpp"
-    "preprocessor/src/*.cpp"
-    "postprocessor/src/*.cpp"
+set(INFERENCE_SUBMODULES
+    inferenceinfo
+    tensordata
+    preprocessor
+    postprocessor
+    model
+    inferenceengine
+    inferencesession
 )
 
-add_library(inference_lib STATIC ${INFERENCE_SOURCES})
+foreach(submodule ${INFERENCE_SUBMODULES})
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/CMakeLists.txt")
+        add_subdirectory(${submodule})
+    endif()
+endforeach()
 
-target_include_directories(inference_lib
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tensordata/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferenceinfo/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/model/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/preprocessor/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/postprocessor/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferenceengine/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inferencesession/include>
-        $<INSTALL_INTERFACE:include>
-)
+add_library(inference_lib INTERFACE)
 
 target_link_libraries(inference_lib
-    PUBLIC
-        common_lib
-        media_defines_lib
-        openvino::runtime
+    INTERFACE
+        inference_session_lib
+        inference_engine_lib
+        inference_model_lib
+        inference_preprocessor_lib
+        inference_postprocessor_lib
+        inference_tensordata_lib
+        inference_info_lib
 )
 
 if(WIN32)
-    target_compile_definitions(inference_lib PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
-
-if(MSVC)
-    target_compile_options(inference_lib PRIVATE /utf-8)
+    target_compile_definitions(inference_lib INTERFACE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 
 if(BUILD_TESTS)

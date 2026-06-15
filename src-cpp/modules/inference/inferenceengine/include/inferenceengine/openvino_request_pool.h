@@ -42,3 +42,34 @@ private:
     /// @brief 是否已经关闭请求池
     bool shutdown_{false};
 };
+
+/// @brief request_pool 的 RAII 包装
+class RequestLease {
+public:
+    RequestLease(std::shared_ptr<OpenVinoInferRequestPool> pool, std::shared_ptr<ov::InferRequest> request)
+        : pool_(std::move(pool)),
+          request_(std::move(request)) {
+    }
+
+    ~RequestLease() {
+        if (pool_ && request_) {
+            pool_->Release(std::move(request_));
+        }
+    }
+
+    bool Valid() const {
+        return request_ != nullptr;
+    }
+
+    ov::InferRequest& operator*() {
+        return *request_;
+    }
+
+    ov::InferRequest* operator->() {
+        return request_.get();
+    }
+
+private:
+    std::shared_ptr<OpenVinoInferRequestPool> pool_;
+    std::shared_ptr<ov::InferRequest> request_;
+};

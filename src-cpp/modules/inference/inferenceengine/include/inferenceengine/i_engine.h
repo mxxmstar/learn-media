@@ -59,17 +59,17 @@ struct OpenVinoPreprocessConfig {
     /// @brief OpenVINO 预处理输入像素格式
     PixelFormat input_pixel_format{PixelFormat::kNV12};
     /// @brief 模型期望的像素格式
-    PixelFormat model_pixel_format{PixelFormat::kBGR24};
-    /// @brief 模型输入布局
-    std::string model_input_layout{"NCHW"};
+    PixelFormat model_pixel_format{PixelFormat::kRGB24};
+    /// @brief 模型输入布局，空字符串表示从模型输入形状推断
+    std::string model_input_layout;
     /// @brief OpenVINO 缩放因子，0 表示不进行缩放
-    float scale{0.0f};
+    float scale{255.0f};
 };
 
 /// @brief 推理引擎加载配置
 struct EngineLoadConfig {
     EngineConfig engine;
-    std::optional<OpenVinoPreprocessConfig> preprocess;
+    std::optional<OpenVinoPreprocessConfig> preprocess; // openvino 自带预处理
 };
 
 /// @brief 推理上下文

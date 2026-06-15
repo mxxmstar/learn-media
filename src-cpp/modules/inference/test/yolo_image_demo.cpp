@@ -197,9 +197,6 @@ int main(int argc, char** argv) {
     OpenVinoPreprocessConfig preprocess_config;
     preprocess_config.enabled = true;
     preprocess_config.input_pixel_format = PixelFormat::kI420;
-    preprocess_config.model_pixel_format = PixelFormat::kRGB24;
-    preprocess_config.model_input_layout = "NCHW";
-    preprocess_config.scale = 255.0f;
 
     EngineLoadConfig load_config;
     load_config.engine.model_path = options.model_path;
