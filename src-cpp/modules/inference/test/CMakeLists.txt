@@ -5,6 +5,11 @@ endif()
 set(OpenCV_ROOT "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/opencv4")
 find_package(OpenCV REQUIRED)
 
+if(NOT TARGET filter_osd_lib)
+    set(BUILD_OSD_TESTS OFF CACHE BOOL "Build OSD tests" FORCE)
+    add_subdirectory(../../filter/osd filter_osd_build)
+endif()
+
 add_executable(inference_yolo_image_demo
     yolo_image_demo.cpp
 )
@@ -12,6 +17,7 @@ add_executable(inference_yolo_image_demo
 target_link_libraries(inference_yolo_image_demo
     PRIVATE
         inference_lib
+        filter_osd_lib
         ${OpenCV_LIBS}
 )
 
