@@ -1,160 +1,124 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import Player from "./player/player.vue";
 
-const greetMsg = ref("");
-const name = ref("");
+const currentPage = ref("home");
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
+function goToPlayer() {
+  currentPage.value = "player";
+}
+
+function goHome() {
+  currentPage.value = "home";
 }
 </script>
 
 <template>
-  <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
-
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
+  <!-- 主页 -->
+  <div v-if="currentPage === 'home'" class="home">
+    <div class="home-card">
+      <div class="home-icon">🎬</div>
+      <h1>Learn Media Player</h1>
+      <p class="home-desc">
+        基于 <strong>Tauri</strong> + <strong>Vue 3</strong> + <strong>Rust</strong> 的媒体播放器
+      </p>
+      <div class="home-features">
+        <span>🎥 视频播放</span>
+        <span>🎵 音频支持</span>
+        <span>📂 本地文件</span>
+        <span>⚡ AI 推理</span>
+      </div>
+      <button class="home-btn" @click="goToPlayer">🚀 进入播放器</button>
     </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
+  </div>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
-  </main>
+  <!-- 播放器页面 -->
+  <Player v-else @back="goHome" />
 </template>
 
-<style scoped>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #249b73);
-}
-
-</style>
 <style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
+* {
   margin: 0;
-  padding-top: 10vh;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+}
+
+.home {
+  width: 100%;
+  height: 100vh;
   display: flex;
-  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+.home-card {
   text-align: center;
+  padding: 48px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+.home-icon {
+  font-size: 5rem;
+  margin-bottom: 1rem;
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+.home-card h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #e94560;
+  margin-bottom: 0.6rem;
 }
 
-.row {
+.home-desc {
+  font-size: 1.05rem;
+  color: #a0a0b0;
+  margin-bottom: 1.5rem;
+}
+.home-desc strong {
+  color: #eee;
+}
+
+.home-features {
   display: flex;
+  gap: 16px;
   justify-content: center;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+}
+.home-features span {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  color: #ccc;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
+.home-btn {
+  background: #e94560;
+  color: #fff;
+  border: none;
+  padding: 14px 40px;
+  font-size: 1.15rem;
+  font-weight: 600;
+  border-radius: 10px;
   cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 20px rgba(233, 69, 96, 0.3);
 }
-
-button:hover {
-  border-color: #396cd8;
+.home-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 28px rgba(233, 69, 96, 0.5);
 }
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+.home-btn:active {
+  transform: translateY(0);
 }
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
 </style>

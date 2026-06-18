@@ -1,0 +1,18 @@
+#pragma once
+
+#include "i_policy.h"
+
+class QueuePolicy : public IFrameRatePolicy {
+public:
+    explicit QueuePolicy(double base_fps);
+
+    void Update(const FrameRateFeedback& feedback) override;
+
+    double TargetFps() const override;
+
+    void Reset() override;
+
+private:
+    double base_fps_ = 0.0;
+    double fps_ = 0.0;
+};
