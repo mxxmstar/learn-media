@@ -32,6 +32,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     if(NOT TARGET media_defines_lib)
         add_subdirectory(../../media/defines media_defines_build)
     endif()
+    if(NOT TARGET runtime_lib)
+        add_subdirectory(../../runtime runtime_build)
+    endif()
+    if(NOT TARGET pipeline_lib)
+        add_subdirectory(../../pipeline pipeline_build)
+    endif()
 endif()
 
 if(BUILD_TESTS)
@@ -54,6 +60,8 @@ target_include_directories(filter_osd_lib
 target_link_libraries(filter_osd_lib
     PUBLIC
         media_defines_lib
+        runtime_lib
+        pipeline_lib
 )
 
 if(WIN32)

@@ -35,6 +35,10 @@ if(NOT TARGET runtime_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/CMa
     add_subdirectory(../runtime runtime_build)
 endif()
 
+if(NOT TARGET pipeline_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../pipeline/CMakeLists.txt")
+    add_subdirectory(../pipeline pipeline_build)
+endif()
+
 set(MEDIA_SUBMODULES
     defines
     stream

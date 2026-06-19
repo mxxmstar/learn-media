@@ -30,6 +30,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     if(NOT TARGET media_defines_lib)
         add_subdirectory(../defines defines_build)
     endif()
+    if(NOT TARGET runtime_lib)
+        add_subdirectory(../../runtime runtime_build)
+    endif()
+    if(NOT TARGET pipeline_lib)
+        add_subdirectory(../../pipeline pipeline_build)
+    endif()
 endif()
 
 option(BUILD_ENCODER_TESTS "Build media encoder tests" ON)
@@ -58,6 +64,8 @@ target_link_libraries(media_encoder_lib
     PUBLIC
         media_defines_lib
         common_lib
+        runtime_lib
+        pipeline_lib
 )
 
 if(AVCODEC_LIBRARY)

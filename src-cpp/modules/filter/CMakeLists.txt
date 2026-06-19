@@ -34,6 +34,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 endif()
 
+if(NOT TARGET runtime_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/CMakeLists.txt")
+    add_subdirectory(../runtime runtime_build)
+endif()
+
+if(NOT TARGET pipeline_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../pipeline/CMakeLists.txt")
+    add_subdirectory(../pipeline pipeline_build)
+endif()
+
 set(FILTER_SUBMODULES
     frameratecontrol
     osd

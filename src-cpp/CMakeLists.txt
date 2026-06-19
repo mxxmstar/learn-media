@@ -31,7 +31,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-option(BUILD_STANDALONE "Build standalone test executable" OFF)
+option(BUILD_STANDALONE "Build standalone test executable" ON)
 option(BUILD_TESTS "Build tests" ON)
 
 if(MSVC)
@@ -57,6 +57,7 @@ endif()
 add_subdirectory(modules/common)
 add_subdirectory(modules/grpc)
 add_subdirectory(modules/runtime)
+add_subdirectory(modules/pipeline)
 add_subdirectory(modules/media)
 add_subdirectory(modules/filter)
 add_subdirectory(modules/inference)
@@ -67,10 +68,16 @@ if(BUILD_STANDALONE)
         add_executable(cpp_core_standalone main.cpp)
         target_include_directories(cpp_core_standalone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(cpp_core_standalone PRIVATE
+            runtime_lib
+            pipeline_lib
             common_lib
             media_defines_lib
             media_puller_lib
             media_decoder_lib
+            media_encoder_lib
+            media_pusher_lib
+            filter_osd_lib
+            inference_lib
             spdlog::spdlog
             fmt::fmt
             Boost::asio
@@ -81,6 +88,47 @@ if(BUILD_STANDALONE)
             Boost::pool
             yaml-cpp::yaml-cpp
         )
+
+        if(WIN32)
+            if(CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
+                set(_openvino_runtime_bin_dir
+                    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin")
+            else()
+                set(_openvino_runtime_bin_dir
+                    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+            endif()
+
+            if(EXISTS "${_openvino_runtime_bin_dir}")
+                if(CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
+                    set(_openvino_runtime_dlls
+                        "${_openvino_runtime_bin_dir}/openvinod.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_ir_frontendd.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_onnx_frontendd.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_intel_cpu_plugind.dll"
+                    )
+                else()
+                    set(_openvino_runtime_dlls
+                        "${_openvino_runtime_bin_dir}/openvino.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_ir_frontend.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_onnx_frontend.dll"
+                        "${_openvino_runtime_bin_dir}/openvino_intel_cpu_plugin.dll"
+                    )
+                endif()
+                foreach(_openvino_runtime_dll IN LISTS _openvino_runtime_dlls)
+                    if(NOT EXISTS "${_openvino_runtime_dll}")
+                        list(REMOVE_ITEM _openvino_runtime_dlls "${_openvino_runtime_dll}")
+                    endif()
+                endforeach()
+                if(_openvino_runtime_dlls)
+                    add_custom_command(TARGET cpp_core_standalone POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${_openvino_runtime_dlls}
+                            "$<TARGET_FILE_DIR:cpp_core_standalone>"
+                        COMMENT "Copying required OpenVINO runtime frontend/plugin DLLs"
+                    )
+                endif()
+            endif()
+        endif()
     else()
         message(WARNING "BUILD_STANDALONE=ON but main.cpp not found; only libraries will be built")
     endif()

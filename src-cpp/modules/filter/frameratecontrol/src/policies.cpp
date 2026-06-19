@@ -13,10 +13,21 @@
 
 namespace {
 
+/// @brief 确保值为非负
+/// @param value 输入值
+/// @param fallback 回退值
+/// @return 非负值
+/// @note 如果输入值为非有限值或负数，返回回退值。
 double positive_or(double value, double fallback) {
     return std::isfinite(value) && value > 0.0 ? value : fallback;
 }
 
+/// @brief 确保帧率在指定范围内
+/// @param fps 输入帧率
+/// @param min_fps 最小帧率
+/// @param max_fps 最大帧率
+/// @return 确保后的帧率
+/// @note 如果输入帧率超出指定范围，返回最近的边界值。
 double clamp_fps(double fps, double min_fps, double max_fps) {
     min_fps = positive_or(min_fps, 1.0);
     max_fps = positive_or(max_fps, min_fps);
@@ -26,6 +37,10 @@ double clamp_fps(double fps, double min_fps, double max_fps) {
     return std::clamp(positive_or(fps, min_fps), min_fps, max_fps);
 }
 
+/// @brief 确保值在0-1范围内
+/// @param value 输入值
+/// @return 确保后的值
+/// @note 如果输入值为非有限值或超出0-1范围，返回0.0。
 double usage01(double value) {
     if (!std::isfinite(value)) {
         return 0.0;
@@ -33,6 +48,11 @@ double usage01(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
 
+/// @brief 计算压力比
+/// @param value 压力值
+/// @param limit 限制值
+/// @return 压力比
+/// @note 如果输入值为非有限值或超出0-1范围，返回0.0。
 double pressure_ratio(double value, double limit) {
     if (!std::isfinite(value) || value <= 0.0 || !std::isfinite(limit) || limit <= 0.0) {
         return 0.0;
@@ -42,8 +62,10 @@ double pressure_ratio(double value, double limit) {
 
 }  // namespace
 
-FixedPolicy::FixedPolicy(double fps)
-    : fps_(positive_or(fps, 0.0)) {
+
+/////////////////////////固定帧率策略实现////////////////////////////////
+
+FixedPolicy::FixedPolicy(double fps) : fps_(positive_or(fps, 0.0)) {
 }
 
 void FixedPolicy::Update(const FrameRateFeedback& feedback) {
@@ -57,8 +79,10 @@ double FixedPolicy::TargetFps() const {
 void FixedPolicy::Reset() {
 }
 
-AdaptivePolicy::AdaptivePolicy(Config cfg)
-    : cfg_(cfg) {
+
+/////////////////////////自适应帧率策略实现////////////////////////////////
+
+AdaptivePolicy::AdaptivePolicy(Config cfg) : cfg_(cfg) {
     cfg_.base_fps = positive_or(cfg_.base_fps, 30.0);
     cfg_.min_fps = positive_or(cfg_.min_fps, 1.0);
     cfg_.max_fps = positive_or(cfg_.max_fps, cfg_.base_fps);
@@ -86,15 +110,17 @@ void AdaptivePolicy::Reset() {
     current_fps_ = cfg_.base_fps;
 }
 
-void AdaptivePolicy::Compute() {
+void AdaptivePolicy::Compute() {    
     const double latency_ms = static_cast<double>(feedback_.latency.count());
     const double latency_limit_ms = static_cast<double>(cfg_.latency_limit.count());
-    const double latency_pressure = pressure_ratio(latency_ms, latency_limit_ms);
+    // 计算压力
+    const double latency_pressure = pressure_ratio(latency_ms, latency_limit_ms);    
     const double queue_pressure = pressure_ratio(usage01(feedback_.queue_usage), cfg_.queue_limit);
     const double cpu_pressure = pressure_ratio(usage01(feedback_.cpu_usage), 0.90);
     const double gpu_pressure = pressure_ratio(usage01(feedback_.gpu_usage), 0.90);
     const double drop_pressure = pressure_ratio(usage01(feedback_.drop_ratio), 0.05);
 
+    // 取最大压力作为目标帧率调整的依据
     const double pressure = std::max({
         latency_pressure,
         queue_pressure,
@@ -103,8 +129,11 @@ void AdaptivePolicy::Compute() {
         drop_pressure
     });
 
+    // 根据压力调整帧率
     if (pressure > 1.0) {
+        // 计算压力比，限制在0-4之间
         const double capped_pressure = std::min(pressure, 4.0);
+        // 计算帧率调整因子 factor = decrease / pressure
         const double factor = std::clamp(cfg_.decrease / capped_pressure, 0.25, cfg_.decrease);
         current_fps_ = clamp_fps(current_fps_ * factor, cfg_.min_fps, cfg_.max_fps);
         return;
@@ -116,9 +145,9 @@ void AdaptivePolicy::Compute() {
     current_fps_ = clamp_fps(current_fps_, cfg_.min_fps, cfg_.max_fps);
 }
 
-ClockSyncPolicy::ClockSyncPolicy(double fps)
-    : base_fps_(positive_or(fps, 0.0)),
-      fps_(base_fps_) {
+///////////////////////////时钟同步策略实现////////////////////////////////
+
+ClockSyncPolicy::ClockSyncPolicy(double fps) : base_fps_(positive_or(fps, 0.0)), fps_(base_fps_) {
 }
 
 void ClockSyncPolicy::Update(const FrameRateFeedback& feedback) {
@@ -134,6 +163,8 @@ void ClockSyncPolicy::Reset() {
     drift_ = Duration{};
     fps_ = base_fps_;
 }
+
+///////////////////////////复合策略实现////////////////////////////////
 
 void CompositePolicy::Add(std::shared_ptr<IFrameRatePolicy> policy) {
     if (policy) {
@@ -164,8 +195,9 @@ void CompositePolicy::Reset() {
     }
 }
 
-PIDPolicy::PIDPolicy(Config cfg)
-    : cfg_(cfg) {
+///////////////////////////PID策略实现////////////////////////////////
+
+PIDPolicy::PIDPolicy(Config cfg) : cfg_(cfg) {
     cfg_.base_fps = positive_or(cfg_.base_fps, 30.0);
     cfg_.min_fps = positive_or(cfg_.min_fps, 1.0);
     cfg_.max_fps = positive_or(cfg_.max_fps, cfg_.base_fps);
@@ -200,9 +232,9 @@ void PIDPolicy::Reset() {
     fps_ = clamp_fps(cfg_.base_fps, cfg_.min_fps, cfg_.max_fps);
 }
 
-QueuePolicy::QueuePolicy(double base_fps)
-    : base_fps_(positive_or(base_fps, 0.0)),
-      fps_(base_fps_) {
+///////////////////////////队列策略实现////////////////////////////////
+
+QueuePolicy::QueuePolicy(double base_fps) : base_fps_(positive_or(base_fps, 0.0)), fps_(base_fps_) {
 }
 
 void QueuePolicy::Update(const FrameRateFeedback& feedback) {
@@ -225,8 +257,9 @@ void QueuePolicy::Reset() {
     fps_ = base_fps_;
 }
 
-TokenBucketPolicy::TokenBucketPolicy(Config cfg)
-    : cfg_(cfg) {
+///////////////////////////令牌桶策略实现////////////////////////////////
+
+TokenBucketPolicy::TokenBucketPolicy(Config cfg) : cfg_(cfg) {
     cfg_.rate = positive_or(cfg_.rate, 30.0);
     cfg_.burst = positive_or(cfg_.burst, 1.0);
     Reset();

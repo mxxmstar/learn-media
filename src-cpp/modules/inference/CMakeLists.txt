@@ -37,6 +37,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 endif()
 
+if(NOT TARGET runtime_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/CMakeLists.txt")
+    add_subdirectory(../runtime runtime_build)
+endif()
+
+if(NOT TARGET pipeline_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../pipeline/CMakeLists.txt")
+    add_subdirectory(../pipeline pipeline_build)
+endif()
+
 if(NOT TARGET openvino::runtime)
     find_package(OpenVINO REQUIRED COMPONENTS Runtime)
 endif()
@@ -49,6 +57,7 @@ set(INFERENCE_SUBMODULES
     model
     inferenceengine
     inferencesession
+    infernode
 )
 
 foreach(submodule ${INFERENCE_SUBMODULES})
@@ -68,6 +77,7 @@ target_link_libraries(inference_lib
         inference_postprocessor_lib
         inference_tensordata_lib
         inference_info_lib
+        inference_node_lib
 )
 
 if(WIN32)

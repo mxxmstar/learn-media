@@ -37,6 +37,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         set(BUILD_PULLER_TESTS OFF)
         add_subdirectory(../puller puller_build)
     endif()
+    if(NOT TARGET runtime_lib)
+        add_subdirectory(../../runtime runtime_build)
+    endif()
+    if(NOT TARGET pipeline_lib)
+        add_subdirectory(../../pipeline pipeline_build)
+    endif()
 endif()
 
 option(BUILD_DECODER_TESTS "Build media decoder tests" ON)
@@ -61,6 +67,8 @@ target_link_libraries(media_decoder_lib
         media_defines_lib
         media_stream_lib
         common_lib
+        runtime_lib
+        pipeline_lib
 )
 
 if(WIN32)
