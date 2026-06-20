@@ -12,8 +12,7 @@
 
 namespace pipeline {
 
-class PullStreamNode : public runtime::INode,
-                       public runtime::SourceNode<PacketMessage> {
+class PullStreamNode : public runtime::INode, public runtime::SourceNode<PacketMessage> {
 public:
     PullStreamNode(PipelineOptions options, std::shared_ptr<PipelineState> state);
 

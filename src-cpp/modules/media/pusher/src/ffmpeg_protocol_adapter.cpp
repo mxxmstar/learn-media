@@ -121,8 +121,7 @@ bool FFmpegProtocolAdapter::Send(const MediaPacket& pkt) {
     const int ret = av_write_frame(fmt_ctx_, out);
     av_packet_free(&out);
     if (ret < 0) {
-        LOG_MAIN_ERROR_AT("FFmpegProtocolAdapter: write packet failed: {}",
-                          ErrorString(ret));
+        LOG_MAIN_ERROR_AT("FFmpegProtocolAdapter: write packet failed: {}", ErrorString(ret));
         return false;
     }
 
@@ -213,7 +212,7 @@ bool FFmpegProtocolAdapter::BuildPacket(const MediaPacket& pkt, AVPacket* out) c
     int ret = 0;
     if (pkt.backend.type == BackendHandle::FFMPEG && pkt.backend.ptr) {
         auto* src = static_cast<AVPacket*>(pkt.backend.ptr);
-        ret = av_packet_ref(out, src);
+        ret = av_packet_ref(out, src);  ///< 引用 src 到 out，不复制数据
         if (ret < 0) {
             LOG_MAIN_ERROR_AT("FFmpegProtocolAdapter: packet ref failed: {}",
                               ErrorString(ret));

@@ -121,10 +121,12 @@ if(BUILD_STANDALONE)
                 endforeach()
                 if(_openvino_runtime_dlls)
                     add_custom_command(TARGET cpp_core_standalone POST_BUILD
-                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                            ${_openvino_runtime_dlls}
-                            "$<TARGET_FILE_DIR:cpp_core_standalone>"
+                        COMMAND ${CMAKE_COMMAND}
+                            -DDEST_DIR="$<TARGET_FILE_DIR:cpp_core_standalone>"
+                            "-DDLLS=${_openvino_runtime_dlls}"
+                            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_dlls_if_missing.cmake"
                         COMMENT "Copying required OpenVINO runtime frontend/plugin DLLs"
+                        VERBATIM
                     )
                 endif()
             endif()

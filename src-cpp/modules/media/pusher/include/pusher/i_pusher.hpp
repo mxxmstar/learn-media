@@ -9,8 +9,14 @@ class IPusher {
 public:
     virtual ~IPusher() = default;
 
+    /// @brief 配置推流参数
     virtual bool Connect() = 0;
+    
+    /// @brief 推流发送
+    /// @param pkt 视频流数据包
     virtual bool Send(MediaPacket pkt) = 0;
+    
+    /// @brief 关闭推流
     virtual bool Close() = 0;
 
     virtual bool Disconnect() { return Close(); }

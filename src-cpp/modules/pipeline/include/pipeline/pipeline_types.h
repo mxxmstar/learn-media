@@ -26,8 +26,8 @@ struct InferenceMessage {
 using InferenceMessagePtr = std::shared_ptr<InferenceMessage>;
 
 struct PipelineOptions {
-    std::string input_url{"rtsp://127.0.0.1/live/in"};
-    std::string output_url{"rtsp://127.0.0.1/live/out"};
+    std::string input_url{};
+    std::string output_url{};
     std::string model_path;
 
     std::string output_format;

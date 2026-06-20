@@ -733,7 +733,7 @@ protected:
             return;
         }
 
-        if (!EnsureConnected()) {
+        if (!ensureConnected()) {
             state_->stats.push_errors.fetch_add(1);
             return;
         }
@@ -750,7 +750,7 @@ private:
     // EnsureConnected：按需建立推流连接
     // 等待编码器配置就绪后，用 EncoderConfig 初始化 PusherConfig
     // 连接失败时每 2 秒重试一次
-    bool EnsureConnected() {
+    bool ensureConnected() {
         if (connected_) {
             return true;
         }

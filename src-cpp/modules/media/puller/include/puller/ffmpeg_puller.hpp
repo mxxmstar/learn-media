@@ -40,8 +40,7 @@ public:
     void SetConnectTimeoutMs(int ms) override;
     void SetReadTimeoutMs(int ms) override;
     void SetLowLatency(bool enable) override;
-    void SetCredentials(const std::string& username,
-                        const std::string& password) override;
+    void SetCredentials(const std::string& username, const std::string& password) override;
     void SetRtspTransport(const std::string& transport) override;
     void SetRtspAutoSwitchToTcp(bool enable) override;
     void SetRtspAutoSwitchTimeoutMs(int ms) override;

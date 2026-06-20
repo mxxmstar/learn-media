@@ -49,5 +49,6 @@ target/
 CMakeCache.txt
 src-cpp/modules/inference/test/yolov5_model/
 src-cpp/modules/inference/test/*.png
+*.cmake
 
 

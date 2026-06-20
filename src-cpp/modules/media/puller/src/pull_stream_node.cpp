@@ -6,9 +6,10 @@
 
 namespace pipeline {
 
-PullStreamNode::PullStreamNode(PipelineOptions options,
-                               std::shared_ptr<PipelineState> state)
-    : options_(std::move(options)), state_(std::move(state)) {}
+PullStreamNode::PullStreamNode(PipelineOptions options, std::shared_ptr<PipelineState> state)
+    : options_(std::move(options)), state_(std::move(state)) {
+
+}
 
 bool PullStreamNode::Init() {
     puller_.SetConnectTimeoutMs(options_.connect_timeout_ms);

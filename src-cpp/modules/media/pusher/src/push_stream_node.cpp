@@ -7,8 +7,7 @@
 
 namespace pipeline {
 
-PushStreamNode::PushStreamNode(PipelineOptions options,
-                               std::shared_ptr<PipelineState> state)
+PushStreamNode::PushStreamNode(PipelineOptions options, std::shared_ptr<PipelineState> state)
     : options_(std::move(options)), state_(std::move(state)) {}
 
 bool PushStreamNode::Init() {
@@ -39,7 +38,7 @@ void PushStreamNode::Process(PacketMessage packet) {
         return;
     }
 
-    if (!EnsureConnected()) {
+    if (!ensureConnected()) {
         state_->stats.push_errors.fetch_add(1);
         return;
     }
@@ -52,7 +51,7 @@ void PushStreamNode::Process(PacketMessage packet) {
     state_->stats.pushed_packets.fetch_add(1);
 }
 
-bool PushStreamNode::EnsureConnected() {
+bool PushStreamNode::ensureConnected() {
     if (connected_) {
         return true;
     }

@@ -267,8 +267,7 @@ void FFmpegPuller::SetLowLatency(bool enable) {
     low_latency_ = enable;
 }
 
-void FFmpegPuller::SetCredentials(const std::string& username,
-                                  const std::string& password) {
+void FFmpegPuller::SetCredentials(const std::string& username, const std::string& password) {
     username_ = username;
     password_ = password;
 }

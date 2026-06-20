@@ -17,6 +17,7 @@
     "boost-filesystem",
     "zlmediakit",
     "ffmpeg",
+    "opengl",
     "opencv",
     "openvino",
     "libyuv",
