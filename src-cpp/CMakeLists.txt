@@ -61,6 +61,7 @@ add_subdirectory(modules/pipeline)
 add_subdirectory(modules/media)
 add_subdirectory(modules/filter)
 add_subdirectory(modules/inference)
+add_subdirectory(modules/render)
 
 # ==================== Standalone executable ====================
 if(BUILD_STANDALONE)
